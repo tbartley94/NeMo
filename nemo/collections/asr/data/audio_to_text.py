@@ -25,7 +25,7 @@ import webdataset as wd
 from torch.utils.data import ChainDataset
 from tqdm import tqdm
 
-from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer, AudioCodesFeaturizer
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.common import tokenizers
 from nemo.collections.common.parts.preprocessing import collections, parsers
@@ -104,6 +104,63 @@ def _speech_collate_fn(batch, pad_id):
         return audio_signal, audio_lengths, tokens, tokens_lengths, sample_ids
 
 
+# only one line difference from _speech_collate_fn 
+# but keeping it separate for now
+# but definitely merge later
+def _audio_codes_collate_fn(batch, pad_id, audio_pad_id=None):
+    """collate batch of audio codes, audio len, tokens, token lens
+    Args:
+        batch (Optional[FloatTensor], Optional[LongTensor], LongTensor,
+               LongTensor):  A tuple of tuples of signal, signal lengths,
+               encoded tokens, and encoded tokens length.  This collate func
+               assumes the signals are 1d torch tensors (i.e. flattened audio codes).
+    """
+    packed_batch = list(zip(*batch))
+    if len(packed_batch) == 5:
+        _, audio_lengths, _, tokens_lengths, sample_ids = packed_batch
+    elif len(packed_batch) == 4:
+        sample_ids = None
+        _, audio_lengths, _, tokens_lengths = packed_batch
+    else:
+        raise ValueError("Expects 4 or 5 tensors in the batch!")
+    max_audio_len = 0
+    has_audio = audio_lengths[0] is not None
+    if has_audio:
+        max_audio_len = max(audio_lengths).item()
+    max_tokens_len = max(tokens_lengths).item()
+
+    audio_signal, tokens = [], []
+    for b in batch:
+        if len(b) == 5:
+            sig, sig_len, tokens_i, tokens_i_len, _ = b
+        else:
+            sig, sig_len, tokens_i, tokens_i_len = b
+        if has_audio:
+            sig_len = sig_len.item()
+            if sig_len < max_audio_len:
+                pad = (0, max_audio_len - sig_len)
+                sig = torch.nn.functional.pad(sig, pad, mode='constant', value=0 if audio_pad_id is None else audio_pad_id)
+            audio_signal.append(sig)
+        tokens_i_len = tokens_i_len.item()
+        if tokens_i_len < max_tokens_len:
+            pad = (0, max_tokens_len - tokens_i_len)
+            tokens_i = torch.nn.functional.pad(tokens_i, pad, value=pad_id)
+        tokens.append(tokens_i)
+
+    if has_audio:
+        audio_signal = torch.stack(audio_signal)
+        audio_lengths = torch.stack(audio_lengths)
+    else:
+        audio_signal, audio_lengths = None, None
+    tokens = torch.stack(tokens)
+    tokens_lengths = torch.stack(tokens_lengths)
+    if sample_ids is None:
+        return audio_signal, audio_lengths, tokens, tokens_lengths
+    else:
+        sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
+        return audio_signal, audio_lengths, tokens, tokens_lengths, sample_ids
+
+
 class ASRManifestProcessor:
     """
     Class that processes a manifest json file containing paths to audio files, transcripts, and durations (in seconds).
@@ -134,6 +191,8 @@ class ASRManifestProcessor:
         eos_id: Optional[int] = None,
         pad_id: int = 0,
         index_by_file_id: bool = False,
+        *args,
+        **kwargs,
     ):
         self.parser = parser
 
@@ -144,6 +203,8 @@ class ASRManifestProcessor:
             max_duration=max_duration,
             max_number=max_utts,
             index_by_file_id=index_by_file_id,
+            *args,
+            **kwargs,
         )
 
         self.eos_id = eos_id
@@ -442,6 +503,8 @@ class _AudioTextDataset(Dataset):
         pad_id: int = 0,
         return_sample_id: bool = False,
         channel_selector: Optional[ChannelSelectorType] = None,
+        *args,
+        **kwargs,
     ):
         if type(manifest_filepath) == str:
             manifest_filepath = manifest_filepath.split(",")
@@ -458,6 +521,8 @@ class _AudioTextDataset(Dataset):
             bos_id=bos_id,
             eos_id=eos_id,
             pad_id=pad_id,
+            *args,
+            **kwargs,
         )
         self.featurizer = WaveformFeaturizer(sample_rate=sample_rate, int_values=int_values, augmentor=augmentor)
         self.trim = trim
@@ -653,6 +718,8 @@ class AudioToBPEDataset(_AudioTextDataset):
         use_start_end_token: bool = True,
         return_sample_id: bool = False,
         channel_selector: Optional[ChannelSelectorType] = None,
+        *args,
+        **kwargs,
     ):
         if use_start_end_token and hasattr(tokenizer, "bos_id") and tokenizer.bos_id > 0:
             bos_id = tokenizer.bos_id
@@ -702,7 +769,73 @@ class AudioToBPEDataset(_AudioTextDataset):
             trim=trim,
             return_sample_id=return_sample_id,
             channel_selector=channel_selector,
+            *args,
+            **kwargs,
         )
+
+
+class AudioCodesToBPEDataset(AudioToBPEDataset):
+    """Inherit from AudioToBPEDataset and replace featurizer and collate function
+    """
+    def __init__(
+        self,
+        manifest_filepath: str,
+        codebook_size: int,
+        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        n_codebooks_to_use: int = None,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[int] = None,
+        min_duration: Optional[int] = None,
+        max_utts: int = 0,
+        use_start_end_token: bool = True,
+        return_sample_id: bool = False,
+    ):
+        add_fields = [
+            'audio_codes_filepath',
+        ]
+        super().__init__(
+            manifest_filepath=manifest_filepath,
+            tokenizer=tokenizer,
+            sample_rate=75,     # dummy value
+            int_values=False,   # dummy value
+            augmentor=augmentor,
+            max_duration=max_duration,
+            min_duration=min_duration,
+            max_utts=max_utts,
+            trim=False,        # dummy value
+            use_start_end_token=use_start_end_token,
+            return_sample_id=return_sample_id,
+            add_fields=add_fields,
+        )
+
+        self.codebook_size = codebook_size
+        self.n_codebooks_to_use = n_codebooks_to_use
+
+        # replace the waveform featurizer with something that can load audio
+        self.featurizer = AudioCodesFeaturizer(codebook_size=codebook_size,
+                                               n_codebooks_to_use=n_codebooks_to_use,
+                                               augmentor=augmentor)
+    
+    def __getitem__(self, index):
+        sample = sample = self.manifest_processor.collection[index]
+        
+        features = self.featurizer.process(
+            sample.audio_codes_filepath,
+        )
+
+        f, fl = features, torch.tensor(features.shape[0]).long()
+        t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
+
+        if self.return_sample_id:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index
+        else:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long()
+
+        return output
+    
+    def _collate_fn(self, batch):
+        audio_pad_id = int(self.codebook_size * self.n_codebooks_to_use)
+        return _audio_codes_collate_fn(batch, pad_id=self.manifest_processor.pad_id, audio_pad_id=audio_pad_id)
 
 
 class _TarredAudioToTextDataset(IterableDataset):

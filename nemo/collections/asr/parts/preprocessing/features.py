@@ -219,6 +219,61 @@ class WaveformFeaturizer(object):
         return cls(sample_rate=sample_rate, int_values=int_values, augmentor=aa)
 
 
+class AudioCodesFeaturizer(object):
+    """Simple module to load audio codes from npz files 
+    """
+    def __init__(
+        self,
+        codebook_size: int,
+        n_codebooks_to_use: int = None,
+        augmentor: Optional["nemo.collections.asr.parts.perturb.AudioAugmentor"] = None,
+    ):
+        self.codebook_size = codebook_size
+        self.augmentor = augmentor if augmentor is not None else AudioAugmentor()
+        self.n_codebooks_to_use = n_codebooks_to_use
+
+    
+    def _flatten_codebooks(self, codes):
+        """flatten codebooks
+        """
+        codes = codes.copy()
+        for n in range(1, codes.shape[0]):
+            codes[n, :] += self.codebook_size * n
+        flat_codes = codes.ravel("F")
+        return flat_codes
+
+        """
+        arr = arr.copy()
+        if offset_size is not None:
+            for n in range(1, arr.shape[0]):
+                arr[n, :] += offset_size * n
+        flat_arr = arr.ravel("F")
+        return flat_arr
+        """
+    
+    
+    def process(self, file_path):
+        """load npz file from filepath
+        """
+        codes = np.load(file_path)
+        codes = codes["codes"]  # [n_codebooks, n_frames]  
+        
+        # if n_codebooks_to_use is greater than the number of codebooks in the file, raise error
+        if self.n_codebooks_to_use is not None and self.n_codebooks_to_use > codes.shape[0]:
+            raise ValueError(
+                f"n_codebooks_to_use ({self.n_codebooks_to_use}) is greater than the number of codebooks in the file ({codes.shape[0]})."
+            )
+        
+        assert len(codes.shape) == 2, f"codes must be 2D, got {len(codes.shape)}"
+
+        if self.n_codebooks_to_use is not None:
+            codes = codes[:self.n_codebooks_to_use, :]
+        
+        # flatten
+        codes = self._flatten_codebooks(codes)
+        return torch.tensor(codes, dtype=torch.long)   # [T]  embedding layers expects int or long
+
+
 class FeaturizerFactory(object):
     def __init__(self):
         pass

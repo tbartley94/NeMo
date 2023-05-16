@@ -61,6 +61,7 @@ __all__ = [
     'SpectrogramAugmentation',
     'MaskedPatchAugmentation',
     'CropOrPadSpectrogramAugmentation',
+    'AudioCodeToEmbeddingPreprocessor',
 ]
 
 
@@ -898,6 +899,54 @@ class SpectrogramToAudio(NeuralModule):
         return output_length
 
 
+class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
+    """Simple Embedding module to convert codes to latent vectors
+    Args:
+        n_codebooks: number of codebooks
+        codebook_size: size of each codebook
+        n_codebooks_to_load: number of codebooks to load
+        embedding_dim: dimension of the embedding
+    """
+    def __init__(
+        self,
+        codec_vocab_size: int,
+        embedding_dim: int=512,
+        padding_idx: Optional[int]=None,
+        *args,
+        **kwargs,
+    ):
+        super().__init__()
+        if padding_idx is not None:
+            self.embedding = torch.nn.Embedding(
+                num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
+                embedding_dim=embedding_dim,
+                padding_idx=padding_idx,
+            )
+        else:
+            self.embedding = torch.nn.Embedding(
+                num_embeddings=codec_vocab_size,
+                embedding_dim=embedding_dim,
+            )
+
+
+    def forward(self, 
+                input_signal: torch.Tensor,
+                length: Optional[torch.Tensor] = None
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Convert a batch of input codes to a batch of embeddings
+        Args:
+            input_signal: input codes of shape (B, T)
+            length: length of each input code sequence of shape (B,)
+        Returns:
+            output: embeddings of shape (B, embedding_dim, T)
+            output_length: length of each output embedding sequence of shape (B,)
+        """
+        output = self.embedding(input_signal)
+        output = torch.transpose(output, -1, -2)    # to be consistent with other preprocessors
+        output_length = length
+        return output, output_length
+        
+        
 @dataclass
 class AudioToMelSpectrogramPreprocessorConfig:
     _target_: str = "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor"

@@ -688,7 +688,41 @@ def get_audio_to_text_bpe_dataset_from_config(
                 augmentor=augmentor,
             )
         else:
-            dataset = get_bpe_dataset(config=config, tokenizer=tokenizer, augmentor=augmentor)
+            if config.get('audio_type', 'not_codes') == 'codes':
+                dataset = get_audioCodes_to_text_bpe_dataset_from_config(
+                    config=config, tokenizer=tokenizer, augmentor=augmentor
+                )
+            else:
+                dataset = get_bpe_dataset(config=config, tokenizer=tokenizer, augmentor=augmentor)
+    return dataset
+
+
+def get_audioCodes_to_text_bpe_dataset_from_config(
+    config: dict,
+    tokenizer: 'TokenizerSpec',
+    augmentor: Optional['AudioAugmentor'] = None,
+) -> audio_to_text.AudioCodesToBPEDataset:
+    """Instantiates a AudioCodesToBPEDataset.
+
+    Args:
+        config: Config of the AudioCodecToBPEDataset.
+        tokenizer: An instance of a TokenizerSpec object.
+        augmentor: Optional AudioAugmentor object for augmentations on audio data.
+    Returns:
+        An instance of AudioCodesToBPEDataset.
+    """
+    dataset  = audio_to_text.AudioCodesToBPEDataset(
+        manifest_filepath=config['manifest_filepath'],
+        codebook_size=config['codebook_size'],
+        n_codebooks_to_use=config['n_codebooks_to_use'],
+        tokenizer=tokenizer,
+        augmentor=augmentor,
+        max_duration=config.get('max_duration', None),
+        min_duration=config.get('min_duration', None),
+        max_utts = config.get('max_utts', 0),
+        use_start_end_token=config.get('use_start_end_token', True),
+        return_sample_id=config.get('return_sample_id', False),
+    )
     return dataset
 
 

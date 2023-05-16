@@ -144,12 +144,17 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
     if item['feature_file'] is not None:
         item['feature_file'] = get_full_path(audio_file=item['feature_file'], manifest_file=manifest_file)
 
+    # Optional audio codec file
+    if 'audio_codes_filepath' in item:
+        item['audio_codes_filepath'] = get_full_path(audio_file=item['audio_codes_filepath'], manifest_file=manifest_file)
+    
     item = dict(
         audio_file=item['audio_file'],
         duration=item['duration'],
         text=item['text'],
         rttm_file=item['rttm_file'],
         feature_file=item['feature_file'],
+        audio_codes_filepath=item.get('audio_codes_filepath', None),
         offset=item.get('offset', None),
         speaker=item.get('speaker', None),
         orig_sr=item.get('orig_sample_rate', None),

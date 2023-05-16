@@ -113,6 +113,8 @@ class AudioText(_Collection):
         max_number: Optional[int] = None,
         do_sort_by_duration: bool = False,
         index_by_file_id: bool = False,
+        *args,
+        **kwargs,
     ):
         """Instantiates audio-text manifest with filters and preprocessing.
 
@@ -132,15 +134,25 @@ class AudioText(_Collection):
             do_sort_by_duration: True if sort samples list by duration. Not compatible with index_by_file_id.
             index_by_file_id: If True, saves a mapping from filename base (ID) to index in data.
         """
-
+        # add any new fields to the OUTPUT_TYPE
+        if "add_fields" in kwargs:
+            self.OUTPUT_TYPE = collections.namedtuple(
+                typename='AudioTextEntity',
+                field_names='id audio_file duration text_tokens offset text_raw speaker orig_sr lang'
+                + ' '
+                + ' '.join(kwargs["add_fields"]),
+            )
         output_type = self.OUTPUT_TYPE
         data, duration_filtered, num_filtered, total_duration = [], 0.0, 0, 0.0
         if index_by_file_id:
             self.mapping = {}
 
-        for id_, audio_file, duration, offset, text, speaker, orig_sr, token_labels, lang in zip(
-            ids, audio_files, durations, offsets, texts, speakers, orig_sampling_rates, token_labels, langs
-        ):
+        fields = [ids, audio_files, durations, offsets, texts, speakers, orig_sampling_rates, token_labels, langs]
+        if "add_fields" in kwargs:
+            fields.extend([kwargs[x] for x in kwargs["add_fields"]])
+
+        for item in zip(*fields):
+            id_, audio_file, duration, offset, text, speaker, orig_sr, token_labels, lang = item[0:9]   # first 9 fields for backward compatibility
             # Duration filters.
             if min_duration is not None and duration < min_duration:
                 duration_filtered += duration
@@ -173,7 +185,11 @@ class AudioText(_Collection):
 
             total_duration += duration
 
-            data.append(output_type(id_, audio_file, duration, text_tokens, offset, text, speaker, orig_sr, lang))
+            output = [id_, audio_file, duration, text_tokens, offset, text, speaker, orig_sr, lang]
+            if len(item) > 9:
+                output.extend(item[9:])
+            data.append(output_type(*output))
+
             if index_by_file_id:
                 file_id, _ = os.path.splitext(os.path.basename(audio_file))
                 if file_id not in self.mapping:
@@ -227,6 +243,14 @@ class ASRAudioText(AudioText):
             orig_srs.append(item['orig_sr'])
             token_labels.append(item['token_labels'])
             langs.append(item['lang'])
+            if "add_fields" in kwargs:
+                for field in kwargs["add_fields"]:
+                    if field not in kwargs:     # piggy-backing on kwargs - not elegent - change later - if there is already same field in kwargs this will fail.
+                        kwargs[field] = []
+                    if field not in item:
+                        kwargs[field].append(None)
+                    else:
+                        kwargs[field].append(item[field])        
         super().__init__(
             ids, audio_files, durations, texts, offsets, speakers, orig_srs, token_labels, langs, *args, **kwargs
         )
