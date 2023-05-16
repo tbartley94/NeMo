@@ -241,15 +241,6 @@ class AudioCodesFeaturizer(object):
             codes[n, :] += self.codebook_size * n
         flat_codes = codes.ravel("F")
         return flat_codes
-
-        """
-        arr = arr.copy()
-        if offset_size is not None:
-            for n in range(1, arr.shape[0]):
-                arr[n, :] += offset_size * n
-        flat_arr = arr.ravel("F")
-        return flat_arr
-        """
     
     
     def process(self, file_path):
