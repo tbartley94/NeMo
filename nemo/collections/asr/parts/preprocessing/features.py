@@ -259,7 +259,7 @@ class AudioCodesFeaturizer(object):
 
         if self.n_codebooks_to_use is not None:
             codes = codes[:self.n_codebooks_to_use, :]
-        
+
         # flatten
         codes = self._flatten_codebooks(codes)
         return torch.tensor(codes, dtype=torch.long)   # [T]  embedding layers expects int or long

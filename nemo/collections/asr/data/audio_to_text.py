@@ -622,7 +622,7 @@ class AudioToCharDataset(_AudioTextDataset):
         max_utts: int = 0,
         blank_index: int = -1,
         unk_index: int = -1,
-        normalize: bool = True,
+        normalize: bool = False,
         trim: bool = False,
         bos_id: Optional[int] = None,
         eos_id: Optional[int] = None,
@@ -630,6 +630,8 @@ class AudioToCharDataset(_AudioTextDataset):
         parser: Union[str, Callable] = 'en',
         return_sample_id: bool = False,
         channel_selector: Optional[ChannelSelectorType] = None,
+        *args,
+        **kwargs,
     ):
         self.labels = labels
 
@@ -652,8 +654,94 @@ class AudioToCharDataset(_AudioTextDataset):
             pad_id=pad_id,
             return_sample_id=return_sample_id,
             channel_selector=channel_selector,
+            *args,
+            **kwargs,
         )
 
+
+class AudioCodesToCharDataset(AudioToCharDataset):
+    """Inherit from AudioToCharDataset and replace featurizer and collate function
+    """
+    def __init__(
+        self,
+        manifest_filepath: str,
+        labels: Union[str, List[str]],
+        codebook_size: int,
+        n_codebooks_to_use: int = None,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[int] = None,
+        min_duration: Optional[int] = None,
+        max_utts: int = 0,
+        blank_index: int = -1,
+        unk_index: int = -1,
+        normalize: bool = False,
+        bos_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        pad_id: int = 0,
+        parser: Union[str, Callable] = 'en',
+        return_sample_id: bool = False,
+        channel_selector: Optional[ChannelSelectorType] = None,
+        *args,
+        **kwargs,
+    ):
+        add_fields = [
+            "audio_codes_filepath",
+        ]
+
+        super().__init__(
+            manifest_filepath=manifest_filepath,
+            labels=labels,
+            sample_rate=75,     # dummy value
+            int_values=False,   # dummy value
+            augmentor=augmentor,
+            max_duration=max_duration,
+            min_duration=min_duration,
+            max_utts=max_utts,
+            blank_index=blank_index,
+            unk_index=unk_index,
+            normalize=normalize,
+            trim=False,        # dummy value
+            bos_id=bos_id,
+            eos_id=eos_id,
+            pad_id=pad_id,
+            parser=parser,
+            return_sample_id=return_sample_id,
+            channel_selector=channel_selector,
+            add_fields=add_fields,
+            *args,
+            **kwargs,
+        )
+
+
+        self.codebook_size = codebook_size
+        self.n_codebooks_to_use = n_codebooks_to_use
+
+        # replace the waveform featurizer with something that can load audio
+        self.featurizer = AudioCodesFeaturizer(codebook_size=codebook_size,
+                                               n_codebooks_to_use=n_codebooks_to_use,
+                                               augmentor=augmentor)
+    
+    def __getitem__(self, index):
+        sample = sample = self.manifest_processor.collection[index]
+        
+        features = self.featurizer.process(
+            sample.audio_codes_filepath,
+        )
+
+        f, fl = features, torch.tensor(features.shape[0]).long()
+        t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
+
+        if self.return_sample_id:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index
+        else:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long()
+
+        return output
+    
+    def _collate_fn(self, batch):
+        audio_pad_id = int(self.codebook_size * self.n_codebooks_to_use)
+        return _audio_codes_collate_fn(batch, pad_id=self.manifest_processor.pad_id, audio_pad_id=audio_pad_id)
+    
 
 class AudioToBPEDataset(_AudioTextDataset):
     """
@@ -1474,7 +1562,8 @@ class BucketingIterator:
             try:
                 sample = next(self.wrapped_iter)
             except StopIteration:
-                break
+                self.wrapped_iter = iter(self.wrapped_ds)
+                sample = next(self.wrapped_iter)
             batches.append(sample)
         if len(batches) == 0:
             raise StopIteration

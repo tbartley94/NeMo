@@ -155,6 +155,36 @@ def get_char_dataset(config: dict, augmentor: Optional['AudioAugmentor'] = None)
     )
     return dataset
 
+def get_audioCodes_to_text_char_dataset(
+    config: dict,
+    augmentor: Optional['AudioAugmentor'] = None,
+) -> audio_to_text.AudioCodesToCharDataset:
+    """Instantiates a AudioCodesToCharDataset.
+
+    Args:
+        config: Config of the AudioCodecToCharDataset.
+        augmentor: Optional AudioAugmentor object for augmentations on audio data.
+    Returns:
+        An instance of AudioCodesToBPEDataset.
+    """
+    dataset  = audio_to_text.AudioCodesToCharDataset(
+        manifest_filepath=config['manifest_filepath'],
+        labels=config.get('labels', None),
+        codebook_size=config['codebook_size'],
+        n_codebooks_to_use=config['n_codebooks_to_use'],
+        augmentor=augmentor,
+        max_duration=config.get('max_duration', None),
+        min_duration=config.get('min_duration', None),
+        max_utts = config.get('max_utts', 0),
+        blank_index=config.get('blank_index', -1),
+        unk_index=config.get('unk_index', -1),
+        normalize=config.get('normalize_transcripts', False),
+        parser=config.get('parser', 'en'),
+        return_sample_id=config.get('return_sample_id', False),
+        channel_selector=config.get('channel_selector', None),
+    )
+    return dataset
+
 
 def get_concat_bpe_dataset(
     config: dict,
@@ -583,7 +613,12 @@ def get_audio_to_text_char_dataset_from_config(
                 config=config, global_rank=global_rank, world_size=world_size, augmentor=augmentor
             )
         else:
-            dataset = get_char_dataset(config=config, augmentor=augmentor)
+            if config.get('audio_type', 'not_codes') == 'codes':
+                dataset = get_audioCodes_to_text_char_dataset_from_config(
+                    config=config, augmentor=augmentor
+                )
+            else:
+                dataset = get_char_dataset(config=config, augmentor=augmentor)
     return dataset
 
 
