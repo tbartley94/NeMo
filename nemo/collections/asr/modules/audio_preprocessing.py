@@ -938,23 +938,15 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
 
         # out projection
         if self.codebook_aggregation == 'stacking':
-            if (embedding_dim * n_codebooks_to_use) != embedding_out_dim:
-                self.out_projection = torch.nn.Linear(
-                    in_features=embedding_dim * n_codebooks_to_use,
-                    out_features=embedding_out_dim,
-                )
-            else:
-                self.out_projection = None
-        elif self.codebook_aggregation is None:
-            if embedding_dim != embedding_out_dim:
-                self.out_projection = torch.nn.Linear(
+            self.out_projection = torch.nn.Linear(
+                in_features=embedding_dim * n_codebooks_to_use,
+                out_features=embedding_out_dim,
+            )
+        else:
+            self.out_projection = torch.nn.Linear(
                     in_features=embedding_dim,
                     out_features=embedding_out_dim,
-                )
-            else:
-                self.out_projection = None
-        else:
-            raise ValueError(f'Unknown codebook_aggregation: {self.codebook_aggregation}')
+            )
 
 
     def forward(self, 
@@ -982,6 +974,18 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
             # change output_length correspondingly
             if length is not None:
                 length = length // self.n_codebooks_to_use
+        
+        if self.codebook_aggregation == 'sum':
+            b, t, d = output.shape
+            output = output.view(b, t // self.n_codebooks_to_use, self.n_codebooks_to_use, d).contiguous()
+            # [B, T//n_codebooks_to_use, n_codebooks_to_use, D]
+            output = torch.sum(output, dim=2)
+            # [B, T//n_codebooks_to_use, D]
+
+            # change output_length correspondingly
+            if length is not None:
+                length = length // self.n_codebooks_to_use
+        
         # output projection 
         if self.out_projection is not None:
             output = self.out_projection(output)
