@@ -212,18 +212,13 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         encoded_flat = encoded.transpose(-1,-2).reshape(b, t, -1).transpose(-1,-2)
 
 
-        #test_masks = masks.transpose(-2,-1).mean(-1) > 0.8
-        #print(test_masks.float().mean(-1))
         # IGNORE: For verification
-        # print(masks_flat.shape)
         # for idx in range(b):
         #     for time_step in range(int(t/N)):
         #         old = masks[idx, :, time_step]
         #         new = torch.cat([masks_flat[idx, :, time_step*N+i] for i in range(N)])
         #         assert torch.equal(new, old)
 
-        # for idx, proc_len in enumerate(target_lengths):
-        #     assert int(masks_flat[idx, :, proc_len:].sum()) == 0
 
 
         outputs = self.decoder_ssl(encoder_output=encoded_flat)
@@ -279,10 +274,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             masks, encoded, encoded_len = self.forward(
                 input_signal=signal, input_signal_length=signal_len,
             )
-
-        if self.decoder_losses is not None:
-            for dec_loss_name, dec_loss in self.decoder_losses.items():
-                self.decoder_losses_active[dec_loss_name] = self.trainer.global_step >= self.start_step[dec_loss_name]
 
         loss_value, _ = self.decoder_loss_step(masks, encoded, encoded_len, signal, signal_len)
 
