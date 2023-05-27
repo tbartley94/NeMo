@@ -915,10 +915,14 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         embedding_out_dim: int=512,
         codebook_aggregation: Optional[str]=None,
         padding_idx: Optional[int]=None,
+        pad_to: int = 0,
         *args,
         **kwargs,
     ):
         super().__init__()
+        self.pad_to = pad_to
+        self.pad_value = padding_idx
+
         self.codebook_size = codebook_size
         self.n_codebooks_to_use = n_codebooks_to_use
         self.codebook_aggregation = codebook_aggregation
@@ -961,6 +965,11 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
             output: embeddings of shape (B, embedding_dim, T)
             output_length: length of each output embedding sequence of shape (B,)
         """
+        # Apply padding before embedding.
+        if self.pad_to > 0:
+            pad_amt = (input_signal.size(-1) // self.n_codebooks_to_use) % self.pad_to
+            if pad_amt != 0:
+                input_signal = torch.nn.functional.pad(input_signal, (0, self.n_codebooks_to_use*(self.pad_to - pad_amt)), value=self.pad_value)
         output = self.embedding(input_signal)
         # [B, T, D]
         # codebooks are interleaved in T dimension

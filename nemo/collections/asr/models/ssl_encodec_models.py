@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from math import ceil
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -22,21 +21,9 @@ from pytorch_lightning import Trainer
 
 from nemo.collections.asr.models.ssl_models import SpeechEncDecSelfSupervisedModel
 from nemo.collections.asr.data import audio_to_text_dataset
-from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
-from nemo.collections.asr.parts.mixins import ASRModuleMixin
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
-from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
-from nemo.core.classes.mixins import AccessMixin, set_access_cfg
-from nemo.core.neural_types import (
-    AcousticEncodedRepresentation,
-    MaskType,
-    AudioSignal,
-    LabelsType,
-    LengthsType,
-    NeuralType,
-    SpectrogramType,
-)
+from nemo.core.classes.common import typecheck
+
 from nemo.utils import logging
 
 
@@ -45,14 +32,15 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-
+        self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
+        self.codebook_size = self._cfg.model_defaults.codebook_size
+        self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if 'augmentor' in config:
             augmentor = process_augmentations(config['augmentor'])
         else:
             augmentor = None
-
 
         shuffle = config['shuffle']
 
@@ -104,14 +92,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             pin_memory=config.get('pin_memory', False),
         )
 
-    @property
-    def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        return {
-            "masks": NeuralType(('B', 'D', 'T'), SpectrogramType()),
-            "encoded": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
-            "encoded_len": NeuralType(tuple('B'), LengthsType()),
-        }
-
     @typecheck()
     def forward(
         self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None,
@@ -120,9 +100,9 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         Forward pass of the model.
 
         Args:
-            input_signal: Tensor that represents a batch of audio codebook entries,
-                of shape [B, T*N]. T  represents number of frames, with N codebooks for every
-                1 frame of compressed audio.
+            input_signal: Tensor that represents a batch of raw audio signals,
+                of shape [B, T]. T here represents timesteps, with 1 second of audio represented as
+                `self.sample_rate` number of floating point values.
             input_signal_length: Vector of length B, that contains the individual lengths of the audio
                 sequences.
             processed_signal: Tensor that represents a batch of processed audio signals,
@@ -131,14 +111,16 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                 processed audio sequences.
 
         Returns:
-            A tuple of 3 elements -
-            1) Masks applied to encodings of shape [B, D, T].
-            2) The encoded features tensor of shape [B, D, T].
-            3) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
+            A tuple of 4 elements -
+            1) Processed spectrograms of shape [B, D, T].
+            2) Masks applied to spectrograms of shape [B, D, T].
+            3) The encoded features tensor of shape [B, D, T].
+            2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
         """
         # Reset access registry
         if self.is_access_enabled():
             self.reset_registry()
+
         # Check for special flag for validation step
         if hasattr(self, '_in_validation_step'):
             in_validation_step = self._in_validation_step
@@ -175,25 +157,34 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         if self.pen_factor:
             self.feat_pen = processed_signal.float().pow(2).mean() * self.pen_factor
 
+        # We use the stacked codebooks as spectrogram targets.
+        spectrograms = input_signal.detach().clone()
+        spectrograms = input_signal.reshape(input_signal.shape[0], -1, self.n_codebooks).contiguous()
+        spectrograms = spectrograms.transpose(-1,-2)
+        #->BxCxT
+
         if self.dropout_features:
             processed_signal = self.dropout_features(processed_signal)
+        if self.dropout_features_q:
+            spectrograms = self.dropout_features_q(spectrograms)
 
         if self.apply_masking:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
-        masked_signal = processed_signal.detach().clone()
-        signal_masks = torch.logical_and(masked_signal < 1e-5, masked_signal > -1e-5).float()
+        masked_spectrograms = processed_signal.detach()
+        spec_masks = torch.logical_and(masked_spectrograms < 1e-5, masked_spectrograms > -1e-5).float()
         for idx, proc_len in enumerate(processed_signal_length):
-            signal_masks[idx, :, proc_len:] = 0.0
+            spec_masks[idx, :, proc_len:] = 0.0
 
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
-        return signal_masks, encoded, encoded_len
+        return spectrograms, spec_masks, encoded, encoded_len
 
-    def decoder_loss_step(self, masks, encoded, encoded_len, targets=None, target_lengths=None):
+    def decoder_loss_step(self, spectrograms, spec_masks, encoded, encoded_len, targets=None, target_lengths=None):
         """
         Forward pass through all decoders and calculate corresponding losses.
         Args:
-            masks: Masks applied to encoding of shape [B, D, T].
+            spectrograms: Processed spectrograms of shape [B, D, T].
+            spec_masks: Masks applied to spectrograms of shape [B, D, T].
             encoded: The encoded features tensor of shape [B, D, T].
             encoded_len: The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
             targets: Optional target labels of shape [B, T]
@@ -204,87 +195,20 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             1) Total sum of losses weighted by corresponding loss_alphas
             2) Dictionary of unweighted losses
         """
+        loss_val_dict = {}
+        loss_value = encoded.new_zeros(1)
 
-
-        # Reshaping to get contiguous codes across time blocks.
-        b, t = targets.shape
-        masks_flat = masks.transpose(-1,-2).reshape(b, t, -1).transpose(-1,-2)
-        encoded_flat = encoded.transpose(-1,-2).reshape(b, t, -1).transpose(-1,-2)
-
-
-        # IGNORE: For verification
-        # for idx in range(b):
-        #     for time_step in range(int(t/N)):
-        #         old = masks[idx, :, time_step]
-        #         new = torch.cat([masks_flat[idx, :, time_step*N+i] for i in range(N)])
-        #         assert torch.equal(new, old)
-
-
-
-        outputs = self.decoder_ssl(encoder_output=encoded_flat)
-        loss_value = self.loss(
-            spec_masks=masks_flat,
-            decoder_outputs=outputs,
-            targets=targets,
-            decoder_lengths=None, # not needed
-            target_lengths=None, # not needed
-        )
-
-        return loss_value, {}
-
-    # PTL-specific methods
-    def training_step(self, batch, batch_nb):
-        signal, signal_len, _, _ = batch
-        masks, encoded, encoded_len = self.forward(
-            input_signal=signal, input_signal_length=signal_len,
-        )
-        if hasattr(self.loss, "set_num_updates"):
-            self.loss.set_num_updates(self.trainer.global_step)
-
-        loss_value, loss_val_dict = self.decoder_loss_step(
-            masks, encoded, encoded_len, signal, signal_len
-        )
-
-        tensorboard_logs = {
-            'learning_rate': self._optimizer.param_groups[0]['lr'],
-            'global_step': self.trainer.global_step,
-        }
-
-        for loss_name, loss_val in loss_val_dict.items():
-            tensorboard_logs['train_' + loss_name] = loss_val
-
-        if self.feat_pen:
-            loss_value += self.feat_pen
-
-        # Reset access registry
-        self.reset_registry()
-
-        return {'loss': loss_value, 'log': tensorboard_logs}
-
-    def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        # Set flag to register tensors
-        self._in_validation_step = True
-
-        signal, signal_len, _, _ = batch
-        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
-            masks, encoded, encoded_len = self.forward(
-                processed_signal=signal, processed_signal_length=signal_len,
+        outputs = self.decoder_ssl(encoder_output=encoded)
+        # -> BxTxD
+        for idx, head in enumerate(self.heads):
+            logits = head(outputs)
+            curr_loss = self.loss(
+                spec_masks=spec_masks,
+                decoder_outputs=nn.functional.log_softmax(logits, -1),
+                targets=spectrograms[:,idx,:] - self.codebook_size*idx, # since encodings are scaled
+                decoder_lengths=None,
+                target_lengths=None,
             )
-        else:
-            masks, encoded, encoded_len = self.forward(
-                input_signal=signal, input_signal_length=signal_len,
-            )
-
-        loss_value, _ = self.decoder_loss_step(masks, encoded, encoded_len, signal, signal_len)
-
-        if self.feat_pen:
-            loss_value += self.feat_pen
-
-        # reset access registry
-        self.reset_registry()
-        del self._in_validation_step
-
-        return {
-            'val_loss': loss_value,
-        }
-
+            loss_val_dict[f"head_{idx}"] = curr_loss
+            loss_value = loss_value + curr_loss
+        return loss_value/self.n_codebooks, loss_val_dict
