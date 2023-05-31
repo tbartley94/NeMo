@@ -14,6 +14,8 @@
 
 from typing import Dict, Optional
 
+import random
+
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
@@ -33,6 +35,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
         self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
+        self.n_decoders = self._cfg.model_defaults.n_decoders_to_use
         self.codebook_size = self._cfg.model_defaults.codebook_size
         self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
 
@@ -200,8 +203,10 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         outputs = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD
-        for idx, head in enumerate(self.heads):
-            logits = head(outputs)
+        selected_heads = random.sample(range(self.n_codebooks), self.n_decoders if self.training else self.n_codebooks)
+        denom = self.n_decoders if self.training else self.n_codebooks
+        for idx in selected_heads:
+            logits = self.heads[idx](outputs)
             curr_loss = self.loss(
                 spec_masks=spec_masks,
                 decoder_outputs=nn.functional.log_softmax(logits, -1),
@@ -211,4 +216,4 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             )
             loss_val_dict[f"head_{idx}"] = curr_loss
             loss_value = loss_value + curr_loss
-        return loss_value/self.n_codebooks, loss_val_dict
+        return loss_value/denom, loss_val_dict
