@@ -38,6 +38,12 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         self.n_decoders = self._cfg.model_defaults.n_decoders_to_use
         self.codebook_size = self._cfg.model_defaults.codebook_size
         self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
+        if self._cfg.model_defaults.get("init_from_encodec", None):
+            logging.info("Copying over Encodec parameters.")
+            encodec = torch.load(self._cfg.model_defaults.get("init_from_encodec"))
+            codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks)]
+            codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
+            self.preprocessor.embedding = nn.Embedding.from_pretrained(torch.cat(codebooks), freeze=False, padding_idx=self.n_codebooks*self.codebook_size)
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if 'augmentor' in config:
