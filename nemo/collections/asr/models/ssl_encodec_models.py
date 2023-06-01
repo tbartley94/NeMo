@@ -36,6 +36,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         super().__init__(cfg=cfg, trainer=trainer)
         self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
         self.n_decoders = self._cfg.model_defaults.n_decoders_to_use
+        self.always_train = set(self._cfg.model_defaults.get("always_train", []))
         self.codebook_size = self._cfg.model_defaults.codebook_size
         self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
         if self._cfg.preprocessor.get("init_from_encodec", None):
@@ -209,8 +210,15 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         outputs = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD
-        selected_heads = random.sample(range(self.n_codebooks), self.n_decoders if self.training else self.n_codebooks)
-        denom = self.n_decoders if self.training else self.n_codebooks
+        if self.training:
+            if self.always_train:
+                selected_heads = list(self.always_train) + random.sample([idx for idx in range(self.n_codebooks) if idx not in self.always_train], self.n_decoders)
+            else:
+                selected_heads = random.sample(range(self.n_codebooks), self.n_decoders)
+        else:
+            selected_heads = range(self.n_codebooks)
+        print(selected_heads)
+        denom = len(selected_heads)
         for idx in selected_heads:
             logits = self.heads[idx](outputs)
             curr_loss = self.loss(
