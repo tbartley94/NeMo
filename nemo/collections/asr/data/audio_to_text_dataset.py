@@ -621,6 +621,19 @@ def get_audio_to_text_char_dataset_from_config(
                 dataset = get_char_dataset(config=config, augmentor=augmentor)
     return dataset
 
+def get_audioCodes_to_text_char_dataset_from_config(
+    config: dict,
+    augmentor: Optional['AudioAugmentor'] = None,
+) -> audio_to_text.AudioCodesToCharDataset:
+    if 'augmentor' in config:
+        augmentor = process_augmentations(config['augmentor'])
+    else:
+        augmentor = None
+
+
+    dataset = get_audioCodes_to_text_char_dataset(config=config, augmentor=augmentor)
+    return dataset
+
 
 def get_audio_to_text_bpe_dataset_from_config(
     config,
