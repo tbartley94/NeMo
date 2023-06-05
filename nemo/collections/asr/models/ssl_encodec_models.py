@@ -34,10 +34,12 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
-        self.n_decoders = self._cfg.model_defaults.get("n_decoders_to_use", self.n_codebooks)
         self.codebook_size = self._cfg.model_defaults.codebook_size
+        self.always_first = self._cfg.model_defaults.get("always_first", False)
+        self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
+        self.n_decoders = self._cfg.model_defaults.get("n_decoders_to_use", self.n_codebooks) - int(self.always_first)
         self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
+
         if self._cfg.preprocessor.get("init_from_encodec", None):
             logging.info("Copying over Encodec parameters.")
             encodec = torch.load(self._cfg.preprocessor.get("init_from_encodec"))
@@ -210,7 +212,10 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         outputs = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD
         if self.training:
-            selected_heads = random.sample(range(self.n_codebooks), self.n_decoders)
+            if self.always_first:
+                selected_heads = [0] + random.sample(range(1, self.n_codebooks), self.n_decoders)
+            else:
+                selected_heads = random.sample(range(self.n_codebooks), self.n_decoders)
         else:
             selected_heads = range(self.n_codebooks)
         denom = len(selected_heads)
