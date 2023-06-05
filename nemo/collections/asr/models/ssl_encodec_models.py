@@ -35,10 +35,18 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
         self.codebook_size = self._cfg.model_defaults.codebook_size
-        self.always_first = self._cfg.model_defaults.get("always_first", False)
         self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
-        self.n_decoders = self._cfg.model_defaults.get("n_decoders_to_use", self.n_codebooks) - int(self.always_first)
-        self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
+        self.n_decoders = self._cfg.model_defaults.get("n_decoders_to_use", self.n_codebooks)
+
+        self.always_first = self._cfg.model_defaults.get("always_first", False)
+        self.never_first = self._cfg.model_defaults.get("never_first", False)
+        assert not (self.always_first and self.never_first)
+        if self.never_first or self.always_first:
+            self.n_decoders = min(self.n_decoders, self.n_codebooks - 1) # can't use more than we have.
+        if self.n_decoders < 1: # Don't need multiple decoders if it's definite.
+            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(1)])
+        else:
+            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
 
         if self._cfg.preprocessor.get("init_from_encodec", None):
             logging.info("Copying over Encodec parameters.")
@@ -173,7 +181,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         spectrograms = input_signal.reshape(input_signal.shape[0], -1, self.n_codebooks).contiguous()
         spectrograms = spectrograms.transpose(-1,-2)
         #->BxCxT
-
         if self.dropout_features:
             processed_signal = self.dropout_features(processed_signal)
         if self.dropout_features_q:
@@ -211,13 +218,19 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         outputs = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD
+
         if self.training:
             if self.always_first:
                 selected_heads = [0] + random.sample(range(1, self.n_codebooks), self.n_decoders)
+            elif self.never_first:
+                selected_heads = random.sample(range(1, self.n_codebooks), self.n_decoders)
             else:
                 selected_heads = random.sample(range(self.n_codebooks), self.n_decoders)
         else:
-            selected_heads = range(self.n_codebooks)
+            if self.n_decoders >= 1: # We have at least random training so it's fair for evaluation.
+                selected_heads = range(int(self.never_first), self.n_codebooks)
+            else:
+                selected_heads = [0]
         denom = len(selected_heads)
         for idx in selected_heads:
             logits = self.heads[idx](outputs)
