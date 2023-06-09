@@ -37,16 +37,19 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         self.codebook_size = self._cfg.model_defaults.codebook_size
         self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
         self.n_decoders = self._cfg.model_defaults.get("n_decoders_to_use", self.n_codebooks)
-
-        self.always_first = self._cfg.model_defaults.get("always_first", False)
-        self.never_first = self._cfg.model_defaults.get("never_first", False)
-        assert not (self.always_first and self.never_first)
-        if self.never_first or self.always_first:
-            self.n_decoders = min(self.n_decoders, self.n_codebooks - 1) # can't use more than we have.
-        if self.n_decoders < 1: # Don't need multiple decoders if it's definite.
-            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(1)])
+        self.target_heads =  self._cfg.model_defaults.get("target_heads", None)
+        if self.target_heads is not None:
+            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(len(self.target_heads))])
         else:
-            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
+            self.always_first = self._cfg.model_defaults.get("always_first", False)
+            self.never_first = self._cfg.model_defaults.get("never_first", False)
+            assert not (self.always_first and self.never_first)
+            if self.never_first or self.always_first:
+                self.n_decoders = min(self.n_decoders, self.n_codebooks - 1) # can't use more than we have.
+            if self.n_decoders < 1: # Don't need multiple decoders if it's definite.
+                self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size)])
+            else:
+                self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
 
         if self._cfg.preprocessor.get("init_from_encodec", None):
             logging.info("Copying over Encodec parameters.")
@@ -218,29 +221,65 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         outputs = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD
-
-        if self.training:
-            if self.always_first:
-                selected_heads = [0] + random.sample(range(1, self.n_codebooks), self.n_decoders)
-            elif self.never_first:
-                selected_heads = random.sample(range(1, self.n_codebooks), self.n_decoders)
-            else:
-                selected_heads = random.sample(range(self.n_codebooks), self.n_decoders)
+        if self.target_heads is not None:
+            selected_heads = self.target_heads
+            denom = len(selected_heads)
+            for i, idx in enumerate(selected_heads):
+                logits = self.heads[i](outputs)
+                curr_loss = self.loss(
+                    spec_masks=spec_masks,
+                    decoder_outputs=nn.functional.log_softmax(logits, -1),
+                    targets=spectrograms[:,idx,:] - self.codebook_size*idx, # since encodings are scaled
+                    decoder_lengths=None,
+                    target_lengths=None,
+                )
+                loss_val_dict[f"head_{idx}"] = curr_loss
+                loss_value = loss_value + curr_loss
         else:
-            if self.n_decoders >= 1: # We have at least random training so it's fair for evaluation.
-                selected_heads = range(int(self.never_first), self.n_codebooks)
+            if self.training:
+                if self.always_first:
+                    selected_heads = [0] + random.sample(range(1, self.n_codebooks), self.n_decoders)
+                elif self.never_first:
+                    selected_heads = random.sample(range(1, self.n_codebooks), self.n_decoders)
+                else:
+                    selected_heads = random.sample(range(self.n_codebooks), self.n_decoders)
             else:
-                selected_heads = [0]
-        denom = len(selected_heads)
-        for idx in selected_heads:
-            logits = self.heads[idx](outputs)
-            curr_loss = self.loss(
-                spec_masks=spec_masks,
-                decoder_outputs=nn.functional.log_softmax(logits, -1),
-                targets=spectrograms[:,idx,:] - self.codebook_size*idx, # since encodings are scaled
-                decoder_lengths=None,
-                target_lengths=None,
-            )
-            loss_val_dict[f"head_{idx}"] = curr_loss
-            loss_value = loss_value + curr_loss
+                if self.n_decoders >= 1: # We have at least random training so it's fair for evaluation.
+                    selected_heads = range(int(self.never_first), self.n_codebooks)
+                else:
+                    selected_heads = [0]
+            denom = len(selected_heads)
+            for idx in selected_heads:
+                logits = self.heads[idx](outputs)
+                curr_loss = self.loss(
+                    spec_masks=spec_masks,
+                    decoder_outputs=nn.functional.log_softmax(logits, -1),
+                    targets=spectrograms[:,idx,:] - self.codebook_size*idx, # since encodings are scaled
+                    decoder_lengths=None,
+                    target_lengths=None,
+                )
+                loss_val_dict[f"head_{idx}"] = curr_loss
+                loss_value = loss_value + curr_loss
         return loss_value/denom, loss_val_dict
+
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        # Set flag to register tensors
+        self._in_validation_step = True
+
+        signal, signal_len, targets, target_lengths = batch
+        spectrograms, spec_masks, encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len,
+            )
+
+        loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
+
+        if self.feat_pen:
+            loss_value += self.feat_pen
+
+        # reset access registry
+        self.reset_registry()
+        del self._in_validation_step
+
+        return loss_val_dict.update({
+            'val_loss': loss_value,
+        })
