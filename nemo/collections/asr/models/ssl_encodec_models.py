@@ -279,7 +279,5 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         # reset access registry
         self.reset_registry()
         del self._in_validation_step
-
-        return loss_val_dict.update({
-            'val_loss': loss_value,
-        })
+        loss_val_dict["val_loss"] = loss_value
+        return loss_val_dict
