@@ -260,5 +260,5 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         loss_dict = {}
         for key in outputs[0].keys():
             loss_dict[key] = torch.stack([x[key] for x in outputs]).mean()
-        loss_dict['log'] = {'val_loss' : loss_dict['val_loss']}
+        loss_dict['log'] = {k: v for k, v in loss_dict.items()}
         return loss_dict
