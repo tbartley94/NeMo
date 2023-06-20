@@ -36,7 +36,11 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         super().__init__(cfg=cfg, trainer=trainer)
         self.codebook_size = self._cfg.model_defaults.codebook_size
         self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
-        self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
+        self.quantize = self._cfg.model_defaults.get("quantize", False)
+        if self.quantize:
+            self.heads = nn.ParameterList([nn.parameter.Parameter(torch.rand((self.codebook_size, self._cfg.decoder_out))) for _ in range(self.n_codebooks)])
+        else:
+            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
 
         # Checks which heads to include and exclude. If passed, n_decoders is treated as 'additional' decoders.
         exclude_codes = self._cfg.model_defaults.get("exclude_codes", [])
@@ -49,10 +53,31 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         if self._cfg.preprocessor.get("init_from_encodec", None):
             logging.info("Copying over Encodec parameters.")
-            encodec = torch.load(self._cfg.preprocessor.get("init_from_encodec"))
+            encodec = torch.load(self._cfg.preprocessor.get("encodec_ckpt"))
             codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks)]
             codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
-            self.preprocessor.embedding = nn.Embedding.from_pretrained(torch.cat(codebooks), freeze=self._cfg.preprocessor.get("freeze", False), padding_idx=self.n_codebooks*self.codebook_size)
+            codebooks = torch.cat(codebooks)
+
+            if self._cfg.preprocessor.get("init_from_encodec", False):
+                self.preprocessor.embedding = nn.Embedding.from_pretrained(codebooks, freeze=self._cfg.preprocessor.get("freeze", False), padding_idx=self.n_codebooks*self.codebook_size)
+
+            if self._cfg.model_defaults.get("init_decoder", False):
+                with torch.no_grad():
+                    for idx, head in enumerate(self.heads):
+                        if self._cfg.model_defaults.get("quantize_decoder", False):
+                            self.heads[idx] = nn.parameter.Parameter(data=codebooks[idx*self.codebook_size: (idx+1)*self.codebook_size,:])
+                        else:
+                            head.weight.copy_(codebooks[idx*self.codebook_size: (idx+1)*self.codebook_size,:])
+
+
+    def _quantize(self, x, head):
+        embed = head.t()
+        dist = torch.stack([-(
+            x[idx].pow(2).sum(1, keepdim=True)
+            - 2 * x[idx] @ embed 
+            + embed.pow(2).sum(0, keepdim=True)
+        ) for idx in range(x.shape[0])], dim=0)
+        return dist
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if 'augmentor' in config:
@@ -173,6 +198,12 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         if self.pen_factor:
             self.feat_pen = processed_signal.float().pow(2).mean() * self.pen_factor
+        # for batch in range(input_signal.shape[0]):
+        #     time_steps = input_signal_length[batch] / 8
+        #     for head in range(8):
+        #         indices = torch.LongTensor([(i * 8) + head for i in range(int(time_steps.item()))])
+        #         codes = input_signal[batch][indices]
+        #         code_counter[head].update(codes.tolist())
 
         # We use the stacked codebooks as spectrogram targets.
         spectrograms = input_signal.detach().clone()
@@ -223,7 +254,10 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             selected_heads = self.target_codes + self.valid_codes
         denom = len(selected_heads)
         for idx in selected_heads:
-            logits = self.heads[idx](outputs)
+            if self.quantize:
+                logits = self._quantize(outputs, self.heads[idx])
+            else:
+                logits = self.heads[idx](outputs)
             curr_loss = self.loss(
                 spec_masks=spec_masks,
                 decoder_outputs=nn.functional.log_softmax(logits, -1),
@@ -235,7 +269,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             loss_value = loss_value + curr_loss
         return loss_value/denom, loss_val_dict
 
-    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):            
         # Set flag to register tensors
         self._in_validation_step = True
 
