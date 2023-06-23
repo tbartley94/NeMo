@@ -36,12 +36,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         super().__init__(cfg=cfg, trainer=trainer)
         self.codebook_size = self._cfg.model_defaults.codebook_size
         self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
-        self.quantize = self._cfg.model_defaults.get("quantize", False)
-        if self.quantize:
-            self.heads = nn.ParameterList([nn.parameter.Parameter(torch.rand((self.codebook_size, self._cfg.decoder_out))) for _ in range(self.n_codebooks)])
-        else:
-            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
-
         # Checks which heads to include and exclude. If passed, n_decoders is treated as 'additional' decoders.
         exclude_codes = self._cfg.model_defaults.get("exclude_codes", [])
         target_codes =  self._cfg.model_defaults.get("target_codes", [])
@@ -51,23 +45,28 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         self.target_codes = target_codes
         self.n_decoders = self._cfg.model_defaults.get("n_decoders_to_use", len(valid_codes))
 
+        self.decoding_mode = self._cfg.model_defaults.get("decoding_mode", "linear")
+        if self.decoding_mode == "base":
+            self._cfg.decoder.feat_out = self.codebook_size
+            self.heads = nn.ModuleList([self.from_config_dict(self._cfg.decoder) for _ in range(self.n_codebooks)])
+            self.decoder_ssl = None
+        elif self.decoding_mode == "single":
+            self._cfg.decoder.feat_out = self.n_codebooks * self.codebook_size
+            self.decoder_ssl = self.from_config_dict(self._cfg.decoder)
+            self.heads = None
+        elif self.decoding_mode == "linear":
+            self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
+        else:
+            assert False
+
+
         if self._cfg.preprocessor.get("init_from_encodec", None):
             logging.info("Copying over Encodec parameters.")
-            encodec = torch.load(self._cfg.preprocessor.get("encodec_ckpt"))
+            encodec = torch.load(self._cfg.preprocessor.get("init_from_encodec"))
             codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks)]
             codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
             codebooks = torch.cat(codebooks)
-
-            if self._cfg.preprocessor.get("init_from_encodec", False):
-                self.preprocessor.embedding = nn.Embedding.from_pretrained(codebooks, freeze=self._cfg.preprocessor.get("freeze", False), padding_idx=self.n_codebooks*self.codebook_size)
-
-            if self._cfg.model_defaults.get("init_decoder", False):
-                with torch.no_grad():
-                    for idx, head in enumerate(self.heads):
-                        if self._cfg.model_defaults.get("quantize_decoder", False):
-                            self.heads[idx] = nn.parameter.Parameter(data=codebooks[idx*self.codebook_size: (idx+1)*self.codebook_size,:])
-                        else:
-                            head.weight.copy_(codebooks[idx*self.codebook_size: (idx+1)*self.codebook_size,:])
+            self.preprocessor.embedding = nn.Embedding.from_pretrained(codebooks, freeze=self._cfg.preprocessor.get("freeze", False), padding_idx=self.n_codebooks*self.codebook_size)
 
 
     def _quantize(self, x, head):
@@ -198,12 +197,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         if self.pen_factor:
             self.feat_pen = processed_signal.float().pow(2).mean() * self.pen_factor
-        # for batch in range(input_signal.shape[0]):
-        #     time_steps = input_signal_length[batch] / 8
-        #     for head in range(8):
-        #         indices = torch.LongTensor([(i * 8) + head for i in range(int(time_steps.item()))])
-        #         codes = input_signal[batch][indices]
-        #         code_counter[head].update(codes.tolist())
 
         # We use the stacked codebooks as spectrogram targets.
         spectrograms = input_signal.detach().clone()
@@ -242,22 +235,21 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             1) Total sum of losses weighted by corresponding loss_alphas
             2) Dictionary of unweighted losses
         """
-        loss_val_dict = {}
-        loss_value = encoded.new_zeros(1)
-
-        outputs = self.decoder_ssl(encoder_output=encoded)
-        # -> BxTxD
-
         if self.training:
             selected_heads = self.target_codes + random.sample(self.valid_codes, self.n_decoders)
         else:
             selected_heads = self.target_codes + self.valid_codes
+        loss_val_dict = {}
+        loss_value = encoded.new_zeros(1)
+        # -> BxTxD
         denom = len(selected_heads)
         for idx in selected_heads:
-            if self.quantize:
-                logits = self._quantize(outputs, self.heads[idx])
-            else:
-                logits = self.heads[idx](outputs)
+            if self.decoding_mode == "linear":
+                logits = self.heads[idx](self.decoder_ssl(encoder_output=encoded))
+            elif self.decoding_mode == "base":
+                logits = self.heads[idx](encoder_output=encoded)
+            elif self.decoding_mode == "single":
+                logits = self.decoder_ssl(encoder_output=encoded)[:,:,(idx*self.codebook_size):((idx+1)*self.codebook_size)]
             curr_loss = self.loss(
                 spec_masks=spec_masks,
                 decoder_outputs=nn.functional.log_softmax(logits, -1),
@@ -268,6 +260,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             loss_val_dict[f"head_{idx}"] = curr_loss
             loss_value = loss_value + curr_loss
         return loss_value/denom, loss_val_dict
+
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):            
         # Set flag to register tensors
