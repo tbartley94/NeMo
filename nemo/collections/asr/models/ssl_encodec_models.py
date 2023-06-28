@@ -60,15 +60,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             assert False
 
 
-        if self._cfg.preprocessor.get("init_from_encodec", None):
-            logging.info("Copying over Encodec parameters.")
-            encodec = torch.load(self._cfg.preprocessor.get("init_from_encodec"))
-            codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks)]
-            codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
-            codebooks = torch.cat(codebooks)
-            self.preprocessor.embedding = nn.Embedding.from_pretrained(codebooks, freeze=self._cfg.preprocessor.get("freeze", False), padding_idx=self.n_codebooks*self.codebook_size)
-
-
     def _quantize(self, x, head):
         embed = head.t()
         dist = torch.stack([-(
@@ -189,24 +180,27 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                 f"{self} Arguments ``input_signal`` and ``input_signal_length`` are mutually exclusive "
                 " with ``processed_signal`` and ``processed_signal_len`` arguments."
             )
-
-        if not has_processed_signal:
-            processed_signal, processed_signal_length = self.preprocessor(
-                input_signal=input_signal, length=input_signal_length,
-            )
-
-        if self.pen_factor:
-            self.feat_pen = processed_signal.float().pow(2).mean() * self.pen_factor
-
         # We use the stacked codebooks as spectrogram targets.
         spectrograms = input_signal.detach().clone()
         spectrograms = input_signal.reshape(input_signal.shape[0], -1, self.n_codebooks).contiguous()
         spectrograms = spectrograms.transpose(-1,-2)
         #->BxCxT
+        if self.preprocessor.n_codebooks_to_use < self._cfg.model_defaults.n_codebooks_to_use:
+            n = self.preprocessor.n_codebooks_to_use
+            input_signal = input_signal.reshape(input_signal.shape[0], -1, self.n_codebooks).contiguous()
+            input_signal = input_signal[:,:,:n]
+            input_signal = input_signal.reshape(input_signal.shape[0], -1).contiguous()
+            # Replacing padding.
+            input_signal = torch.where(input_signal == self.n_codebooks*self.codebook_size, self.preprocessor.pad_value, input_signal)
+            # Signal lengths changed.
+            input_signal_length = input_signal_length * n // self.n_codebooks
+        processed_signal, processed_signal_length = self.preprocessor(
+            input_signal=input_signal, length=input_signal_length,
+        )
+        if self.pen_factor:
+            self.feat_pen = processed_signal.float().pow(2).mean() * self.pen_factor
         if self.dropout_features:
             processed_signal = self.dropout_features(processed_signal)
-        if self.dropout_features_q:
-            spectrograms = self.dropout_features_q(spectrograms)
 
         if self.apply_masking:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
@@ -215,7 +209,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         spec_masks = torch.logical_and(masked_spectrograms < 1e-5, masked_spectrograms > -1e-5).float()
         for idx, proc_len in enumerate(processed_signal_length):
             spec_masks[idx, :, proc_len:] = 0.0
-
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return spectrograms, spec_masks, encoded, encoded_len
 

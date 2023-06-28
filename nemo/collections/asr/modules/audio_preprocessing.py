@@ -916,6 +916,8 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         codebook_aggregation: Optional[str]=None,
         padding_idx: Optional[int]=None,
         pad_to: int = 0,
+        init_from_encodec: str = None,
+        freeze: bool = False,
         *args,
         **kwargs,
     ):
@@ -928,17 +930,26 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         self.codebook_aggregation = codebook_aggregation
 
         codec_vocab_size = self.codebook_size * self.n_codebooks_to_use
-        if padding_idx is not None:
-            self.embedding = torch.nn.Embedding(
-                num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
-                embedding_dim=embedding_dim,
-                padding_idx=padding_idx,
-            )
+
+        if init_from_encodec is not None:
+            logging.info("Copying over Encodec parameters.")
+            encodec = torch.load(init_from_encodec)
+            codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks_to_use)]
+            codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
+            codebooks = torch.cat(codebooks)
+            self.embedding = torch.nn.Embedding.from_pretrained(codebooks, freeze=freeze, padding_idx=self.pad_value)
         else:
-            self.embedding = torch.nn.Embedding(
-                num_embeddings=codec_vocab_size,
-                embedding_dim=embedding_dim,
-            )
+            if padding_idx is not None:
+                self.embedding = torch.nn.Embedding(
+                    num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
+                    embedding_dim=embedding_dim,
+                    padding_idx=padding_idx,
+                )
+            else:
+                self.embedding = torch.nn.Embedding(
+                    num_embeddings=codec_vocab_size,
+                    embedding_dim=embedding_dim,
+                )
 
         # out projection
         if self.codebook_aggregation == 'stacking':
