@@ -16,6 +16,15 @@ from typing import Dict, Optional
 
 import random
 
+from nemo.core.neural_types import (
+    AcousticEncodedRepresentation,
+    AudioSignal,
+    LabelsType,
+    LengthsType,
+    NeuralType,
+    SpectrogramType,
+)
+
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
@@ -152,7 +161,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         # Reset access registry
         if self.is_access_enabled():
             self.reset_registry()
-
         # Check for special flag for validation step
         if hasattr(self, '_in_validation_step'):
             in_validation_step = self._in_validation_step
@@ -182,29 +190,18 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             )
         # We use the stacked codebooks as spectrogram targets.
         spectrograms = input_signal.detach().clone()
-        spectrograms = input_signal.reshape(input_signal.shape[0], -1, self.n_codebooks).contiguous()
-        spectrograms = spectrograms.transpose(-1,-2)
-        #->BxCxT
-        if self.preprocessor.n_codebooks_to_use < self._cfg.model_defaults.n_codebooks_to_use:
+        # For smaller inputs
+        if self.preprocessor.n_codebooks_to_use < self.n_codebooks:
             n = self.preprocessor.n_codebooks_to_use
-            input_signal = input_signal.reshape(input_signal.shape[0], -1, self.n_codebooks).contiguous()
-            input_signal = input_signal[:,:,:n]
-            input_signal = input_signal.reshape(input_signal.shape[0], -1).contiguous()
-            # Replacing padding.
-            input_signal = torch.where(input_signal == self.n_codebooks*self.codebook_size, self.preprocessor.pad_value, input_signal)
-            # Signal lengths changed.
-            input_signal_length = input_signal_length * n // self.n_codebooks
+            input_signal = input_signal[:,:n,:]
+            input_signal = input_signal.where(input_signal == self.n_codebooks*self.codebook_size, self.preprocessor.pad_value)
         processed_signal, processed_signal_length = self.preprocessor(
             input_signal=input_signal, length=input_signal_length,
         )
-        if self.pen_factor:
-            self.feat_pen = processed_signal.float().pow(2).mean() * self.pen_factor
         if self.dropout_features:
             processed_signal = self.dropout_features(processed_signal)
-
         if self.apply_masking:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
-
         masked_spectrograms = processed_signal.detach()
         spec_masks = torch.logical_and(masked_spectrograms < 1e-5, masked_spectrograms > -1e-5).float()
         for idx, proc_len in enumerate(processed_signal_length):
@@ -254,6 +251,20 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             loss_value = loss_value + curr_loss
         return loss_value/denom, loss_val_dict
 
+    @property
+    def input_types(self) -> Optional[Dict[str, NeuralType]]:
+        if hasattr(self.preprocessor, '_sample_rate'):
+            input_signal_eltype = AudioSignal(freq=self.preprocessor._sample_rate)
+        else:
+            input_signal_eltype = AudioSignal()
+        return {
+            "input_signal": NeuralType(('B', 'D', 'T'), input_signal_eltype, optional=True),
+            "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
+            "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "targets": NeuralType(('B', 'T'), LabelsType(), optional=True),
+            "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):            
         # Set flag to register tensors

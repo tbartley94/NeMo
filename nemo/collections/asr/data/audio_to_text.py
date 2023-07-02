@@ -538,7 +538,6 @@ class _AudioTextDataset(Dataset):
 
         if offset is None:
             offset = 0
-
         features = self.featurizer.process(
             sample.audio_file,
             offset=offset,
@@ -662,6 +661,19 @@ class AudioToCharDataset(_AudioTextDataset):
 class AudioCodesToCharDataset(AudioToCharDataset):
     """Inherit from AudioToCharDataset and replace featurizer and collate function
     """
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports.
+               """
+        return {
+            'audio_signal': NeuralType(('B', 'D', 'T'), AudioSignal()),
+            'a_sig_length': NeuralType(tuple('B'), LengthsType()),
+            'transcripts': NeuralType(('B', 'T'), LabelsType()),
+            'transcript_length': NeuralType(tuple('B'), LengthsType()),
+            'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
     def __init__(
         self,
         manifest_filepath: str,
@@ -720,15 +732,14 @@ class AudioCodesToCharDataset(AudioToCharDataset):
         self.featurizer = AudioCodesFeaturizer(codebook_size=codebook_size,
                                                n_codebooks_to_use=n_codebooks_to_use,
                                                augmentor=augmentor)
-    
+
     def __getitem__(self, index):
         sample = sample = self.manifest_processor.collection[index]
-        
         features = self.featurizer.process(
             sample.audio_codes_filepath,
         )
 
-        f, fl = features, torch.tensor(features.shape[0]).long()
+        f, fl = features, torch.tensor(features.shape[1]).long()
         t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
 
         if self.return_sample_id:

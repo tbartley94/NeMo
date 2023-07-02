@@ -922,14 +922,14 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         **kwargs,
     ):
         super().__init__()
-        self.pad_to = pad_to
-        self.pad_value = padding_idx
-
         self.codebook_size = codebook_size
         self.n_codebooks_to_use = n_codebooks_to_use
         self.codebook_aggregation = codebook_aggregation
 
         codec_vocab_size = self.codebook_size * self.n_codebooks_to_use
+
+        self.pad_to = pad_to
+        self.pad_value = padding_idx if padding_idx else codec_vocab_size
 
         if init_from_encodec is not None:
             logging.info("Copying over Encodec parameters.")
@@ -970,7 +970,7 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
                 ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert a batch of input codes to a batch of embeddings
         Args:
-            input_signal: input codes of shape (B, T)
+            input_signal: input codes of shape (B, D, T)
             length: length of each input code sequence of shape (B,)
         Returns:
             output: embeddings of shape (B, embedding_dim, T)
@@ -978,34 +978,14 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         """
         # Apply padding before embedding.
         if self.pad_to > 0:
-            pad_amt = (input_signal.size(-1) // self.n_codebooks_to_use) % self.pad_to
+            pad_amt = (input_signal.size(-1)) % self.pad_to
             if pad_amt != 0:
-                input_signal = torch.nn.functional.pad(input_signal, (0, self.n_codebooks_to_use*(self.pad_to - pad_amt)), value=self.pad_value)
+                input_signal = torch.nn.functional.pad(input_signal, (0, self.pad_to - pad_amt), value=self.pad_value)
         output = self.embedding(input_signal)
-        # [B, T, D]
-        # codebooks are interleaved in T dimension
-        # e.g. with two code books: c11, c21, c12, c22, c13, c23, ...
-        # stack all codebooks in T dimension
-        if self.codebook_aggregation == 'stacking':
-            b, t, d = output.shape
-            output = output.view(b, t // self.n_codebooks_to_use, d * self.n_codebooks_to_use).contiguous()
-            # [B, T//n_codebooks_to_use, D*n_codebooks_to_use]
-
-            # change output_length correspondingly
-            if length is not None:
-                length = length // self.n_codebooks_to_use
-        
+        # [B, C, T, D]
         if self.codebook_aggregation == 'sum':
-            b, t, d = output.shape
-            output = output.view(b, t // self.n_codebooks_to_use, self.n_codebooks_to_use, d).contiguous()
-            # [B, T//n_codebooks_to_use, n_codebooks_to_use, D]
-            output = torch.sum(output, dim=2)
-            # [B, T//n_codebooks_to_use, D]
-
-            # change output_length correspondingly
-            if length is not None:
-                length = length // self.n_codebooks_to_use
-        
+            output = torch.sum(output, dim=1)
+            # [B, T, D]
         # output projection 
         if self.out_projection is not None:
             output = self.out_projection(output)

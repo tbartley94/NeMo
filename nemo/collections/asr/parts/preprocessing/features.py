@@ -231,14 +231,13 @@ class AudioCodesFeaturizer(object):
         self.n_codebooks_to_use = n_codebooks_to_use
 
     
-    def _flatten_codebooks(self, codes):
+    def _scale_codebooks(self, codes):
         """flatten codebooks
         """
         codes = codes.copy()
         for n in range(1, codes.shape[0]):
             codes[n, :] += self.codebook_size * n
-        flat_codes = codes.ravel("F")
-        return flat_codes
+        return codes
     
     
     def process(self, file_path):
@@ -257,10 +256,9 @@ class AudioCodesFeaturizer(object):
 
         if self.n_codebooks_to_use is not None:
             codes = codes[:self.n_codebooks_to_use, :]
-
         # flatten
-        codes = self._flatten_codebooks(codes)
-        return torch.tensor(codes, dtype=torch.long)   # [T]  embedding layers expects int or long
+        codes = self._scale_codebooks(codes)
+        return torch.tensor(codes, dtype=torch.long)   # [n_codebooks, T]  embedding layers expects int or long
 
 
 class FeaturizerFactory(object):
