@@ -194,7 +194,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         if self.preprocessor.n_codebooks_to_use < self.n_codebooks:
             n = self.preprocessor.n_codebooks_to_use
             input_signal = input_signal[:,:n,:]
-            input_signal = input_signal.where(input_signal == self.n_codebooks*self.codebook_size, self.preprocessor.pad_value)
+            input_signal = torch.where(input_signal == self.n_codebooks*self.codebook_size, self.preprocessor.pad_value, input_signal)
         processed_signal, processed_signal_length = self.preprocessor(
             input_signal=input_signal, length=input_signal_length,
         )
