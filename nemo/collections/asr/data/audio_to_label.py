@@ -363,7 +363,7 @@ class AudioToClassificationLabelDataset(_AudioLabelDataset):
 
     def _collate_fn(self, batch):
         return _speech_collate_fn(batch, pad_id=0)
-
+    
 
 class AudioToSpeechLabelDataset(_AudioLabelDataset):
     """
@@ -441,6 +441,19 @@ class AudioToSpeechLabelDataset(_AudioLabelDataset):
 
     def vad_frame_seq_collate_fn(self, batch):
         return _vad_frame_seq_collate_fn(self, batch)
+
+
+class AudioCodesToSpeechLabelDataset(AudioToSpeechLabelDataset):
+    def __getitem__(self, index):
+        sample = self.collection[index]
+        features = self.featurizer.process(sample.audio_file)
+        f, fl = features, torch.tensor(features.shape[0]).long()
+        if not self.is_regression_task:
+            t = torch.tensor(self.label2id[sample.label]).long()
+        else:
+            t = torch.tensor(sample.label).float()
+        tl = torch.tensor(1).long()  # For compatibility with collate_fn used later
+        return f, fl, t, tl
 
 
 class _TarredAudioLabelDataset(IterableDataset):
