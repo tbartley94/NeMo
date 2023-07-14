@@ -922,7 +922,7 @@ class AudioCodesToBPEDataset(AudioToBPEDataset):
             sample.audio_codes_filepath,
         )
 
-        f, fl = features, torch.tensor(features.shape[0]).long()
+        f, fl = features, torch.tensor(features.shape[1]).long()
         t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
 
         if self.return_sample_id:
@@ -932,6 +932,18 @@ class AudioCodesToBPEDataset(AudioToBPEDataset):
 
         return output
     
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports.
+               """
+        return {
+            'audio_signal': NeuralType(('B', 'C', 'T'), AudioSignal()),
+            'a_sig_length': NeuralType(tuple('B'), LengthsType()),
+            'transcripts': NeuralType(('B', 'T'), LabelsType()),
+            'transcript_length': NeuralType(tuple('B'), LengthsType()),
+            'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
     def _collate_fn(self, batch):
         audio_pad_id = int(self.codebook_size * self.n_codebooks_to_use)
         return _audio_codes_collate_fn(batch, pad_id=self.manifest_processor.pad_id, audio_pad_id=audio_pad_id)
