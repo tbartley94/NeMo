@@ -36,6 +36,7 @@ from nemo.core.neural_types import (
     MFCCSpectrogramType,
     NeuralType,
     SpectrogramType,
+    IntType
 )
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
@@ -60,6 +61,7 @@ __all__ = [
     'AudioToMFCCPreprocessor',
     'SpectrogramAugmentation',
     'MaskedPatchAugmentation',
+    'CodePatchAugmentation',
     'CropOrPadSpectrogramAugmentation',
     'AudioCodeToEmbeddingPreprocessor',
 ]
@@ -539,6 +541,88 @@ class SpectrogramAugmentation(NeuralModule):
             augmented_spec = self.spec_augment(input_spec=augmented_spec, length=length)
         return augmented_spec
 
+
+class CodePatchAugmentation(NeuralModule):
+    """
+        Zeroes out fixed size time patches of the spectrogram.
+        All samples in batch are guaranteed to have the same amount of masked time steps.
+        Optionally also performs frequency masking in the same way as SpecAugment.
+        Args:
+            patch_size (int): up to how many time steps does one patch consist of.
+                Defaults to 48.
+            mask_patches (float): how many patches should be masked in each sample.
+                if >= 1., interpreted as number of patches (after converting to int)
+                if <1.,   interpreted as fraction of total tokens to be masked (number of patches is rounded up)
+                Defaults to 10.
+            freq_masks (int): how many frequency segments should be cut.
+                Defaults to 0.
+            freq_width (int): maximum number of frequencies to be cut in a segment.
+                Defaults to 0.
+    """
+
+    @property
+    def input_types(self):
+        """Returns definitions of module input types
+        """
+        return {
+            "input_spec": NeuralType(('B', 'D', 'T'), SpectrogramType()),
+            "length": NeuralType(tuple('B'), LengthsType()),
+            "codes": NeuralType(tuple('D'), IntType())
+        }
+
+    @property
+    def output_types(self):
+        """Returns definitions of module output types
+        """
+        return {"augmented_spec": NeuralType(('B', 'D', 'T'), SpectrogramType())}
+
+    def __init__(
+        self, patch_size: int = 48, mask_patches: float = 10.0, freq_masks: int = 0, freq_width: int = 0, padding_idx: int = 0
+    ):
+        super().__init__()
+        self.patch_size = patch_size
+        self.padding_idx = padding_idx 
+        if mask_patches >= 1:
+            self.mask_patches = int(mask_patches)
+        elif mask_patches >= 0:
+            self._mask_fraction = mask_patches
+            self.mask_patches = None
+        else:
+            raise ValueError('mask_patches cannot be negative')
+
+        if freq_masks > 0:
+            self.spec_augment = SpecAugment(freq_masks=freq_masks, time_masks=0, freq_width=freq_width, time_width=0,)
+        else:
+            self.spec_augment = None
+
+    @typecheck()
+    def forward(self, input_spec, length, codes):
+        augmented_spec = input_spec
+        min_len = torch.min(length)
+
+        if self.mask_patches is None:
+            # masking specified as fraction
+            len_fraction = int(min_len * self._mask_fraction)
+            mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
+        else:
+            mask_patches = self.mask_patches
+
+        if min_len < self.patch_size * mask_patches:
+            mask_patches = min_len // self.patch_size
+
+        for q in codes:
+            for idx in range(input_spec.shape[0]):
+                cur_len = length[idx]
+                patches = range(cur_len // self.patch_size)
+                masked_patches = random.sample(patches, mask_patches)
+
+                for mp in masked_patches:
+                    augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.padding_idx # padding value
+
+        if self.spec_augment is not None:
+            augmented_spec = self.spec_augment(input_spec=augmented_spec, length=length)
+
+        return augmented_spec
 
 class MaskedPatchAugmentation(NeuralModule):
     """
