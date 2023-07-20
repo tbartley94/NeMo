@@ -447,7 +447,7 @@ class AudioCodesToSpeechLabelDataset(AudioToSpeechLabelDataset):
     def __getitem__(self, index):
         sample = self.collection[index]
         features = self.featurizer.process(sample.audio_file)
-        f, fl = features, torch.tensor(features.shape[0]).long()
+        f, fl = features, torch.tensor(features.shape[1]).long()
         if not self.is_regression_task:
             t = torch.tensor(self.label2id[sample.label]).long()
         else:

@@ -381,6 +381,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
     @typecheck()
     def forward(self, input_signal, input_signal_length):
+        print(input_signal_length)
         processed_signal, processed_signal_len = self.preprocessor(
             input_signal=input_signal, length=input_signal_length,
         )
@@ -416,16 +417,15 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         loss_value = self.eval_loss(logits=logits, labels=labels)
         acc_top_k = self._accuracy(logits=logits, labels=labels)
         correct_counts, total_counts = self._accuracy.correct_counts_k, self._accuracy.total_counts_k
-        #self._macro_accuracy.update(preds=logits, target=labels)
-        #stats = self._macro_accuracy._final_state()
-        #print(stats)
+        self._macro_accuracy.update(preds=logits, target=labels)
+        stats = self._macro_accuracy._final_state()
 
         return {
             f'{tag}_loss': loss_value,
             f'{tag}_correct_counts': correct_counts,
             f'{tag}_total_counts': total_counts,
             f'{tag}_acc_micro_top_k': acc_top_k,
-            #f'{tag}_acc_macro_stats': stats,
+            f'{tag}_acc_macro_stats': stats,
         }
 
     def multi_evaluation_epoch_end(self, outputs, dataloader_idx: int = 0, tag: str = 'val'):
@@ -437,24 +437,24 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         self._accuracy.total_counts_k = total_counts
         topk_scores = self._accuracy.compute()
 
-        # self._macro_accuracy.tp = torch.stack([x[f'{tag}_acc_macro_stats'][0] for x in outputs]).sum(axis=0)
-        # self._macro_accuracy.fp = torch.stack([x[f'{tag}_acc_macro_stats'][1] for x in outputs]).sum(axis=0)
-        # self._macro_accuracy.tn = torch.stack([x[f'{tag}_acc_macro_stats'][2] for x in outputs]).sum(axis=0)
-        # self._macro_accuracy.fn = torch.stack([x[f'{tag}_acc_macro_stats'][3] for x in outputs]).sum(axis=0)
-        # macro_accuracy_score = self._macro_accuracy.compute()
+        self._macro_accuracy.tp = torch.stack([x[f'{tag}_acc_macro_stats'][0] for x in outputs]).sum(axis=0)
+        self._macro_accuracy.fp = torch.stack([x[f'{tag}_acc_macro_stats'][1] for x in outputs]).sum(axis=0)
+        self._macro_accuracy.tn = torch.stack([x[f'{tag}_acc_macro_stats'][2] for x in outputs]).sum(axis=0)
+        self._macro_accuracy.fn = torch.stack([x[f'{tag}_acc_macro_stats'][3] for x in outputs]).sum(axis=0)
+        macro_accuracy_score = self._macro_accuracy.compute()
 
         self._accuracy.reset()
-        #self._macro_accuracy.reset()
+        self._macro_accuracy.reset()
 
         self.log(f'{tag}_loss', loss_mean, sync_dist=True)
         for top_k, score in zip(self._accuracy.top_k, topk_scores):
             self.log(f'{tag}_acc_micro_top_{top_k}', score, sync_dist=True)
-        #self.log(f'{tag}_acc_macro', macro_accuracy_score, sync_dist=True)
+        self.log(f'{tag}_acc_macro', macro_accuracy_score, sync_dist=True)
 
         return {
             f'{tag}_loss': loss_mean,
             f'{tag}_acc_micro_top_k': topk_scores,
-            #f'{tag}_acc_macro': macro_accuracy_score,
+            f'{tag}_acc_macro': macro_accuracy_score,
         }
 
     def validation_step(self, batch, batch_idx, dataloader_idx: int = 0):
