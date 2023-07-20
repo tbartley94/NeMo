@@ -23,13 +23,14 @@ from pytorch_lightning import Trainer
 
 from nemo.core import typecheck
 
-typecheck.set_typecheck_enabled(enabled=False) 
+#typecheck.set_typecheck_enabled(enabled=False) 
 
 from nemo.core.neural_types import (
     AudioSignal,
     LabelsType,
     LengthsType,
     NeuralType,
+    AcousticEncodedRepresentation,
     SpectrogramType,
 )
 
@@ -129,6 +130,16 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecSelfSupervisedMo
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "targets": NeuralType(('B', 'T'), LabelsType(), optional=True),
             "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+    
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        return {
+            "spectrograms": NeuralType(('B', 'D', 'T'), SpectrogramType()),
+            "spec_masks": NeuralType(('B', 'D', 'T'), SpectrogramType()),
+            "encoded": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            "encoded_len": NeuralType(tuple('B'), LengthsType()),
+            "selected_heads": NeuralType(tuple('C'), LengthsType())
         }
 
     @typecheck()
@@ -249,27 +260,18 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecSelfSupervisedMo
         if self.feat_pen:
             loss_value += self.feat_pen
 
-        # Reset access registry
-        self.reset_registry()
-
         return {'loss': loss_value, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):            
         # Set flag to register tensors
         self._in_validation_step = True
-
         signal, signal_len, targets, target_lengths = batch
         spectrograms, spec_masks, encoded, encoded_len, target_codes = self.forward(
                 input_signal=signal, input_signal_length=signal_len,
             )
-
         loss_value, loss_val_dict = self.decoder_loss_step(spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=self.target_codes + self.valid_codes)
-
         if self.feat_pen:
             loss_value += self.feat_pen
-
-        # reset access registry
-        self.reset_registry()
         del self._in_validation_step
         loss_val_dict["val_loss"] = loss_value
         return loss_val_dict
