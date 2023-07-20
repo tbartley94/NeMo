@@ -41,7 +41,7 @@ from nemo.core.classes.common import typecheck
 from nemo.utils import logging
 
 
-class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
+class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     """Base class for encoder-decoder models used for self-supervised encoder pre-training"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
