@@ -131,11 +131,10 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
             1) Total sum of losses weighted by corresponding loss_alphas
             2) Dictionary of unweighted losses
         """
-        loss_val_dict = {}
+        #loss_val_dict = {}
         loss_value = encoded.new_zeros(1)
         # -> BxTxD
         denom = len(selected_heads)
-        print(selected_heads)
         for idx in selected_heads:
             logits = self.heads[idx](encoder_output=encoded)
             curr_loss = self.loss(
@@ -145,9 +144,9 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
                 decoder_lengths=None,
                 target_lengths=None,
             )
-            loss_val_dict[f"head_{idx}"] = curr_loss
+            #loss_val_dict[f"head_{idx}"] = curr_loss
             loss_value = loss_value + curr_loss
-        return loss_value/denom, loss_val_dict
+        return loss_value/denom #loss_val_dict
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
@@ -159,7 +158,7 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
         if hasattr(self.loss, "set_num_updates"):
             self.loss.set_num_updates(self.trainer.global_step)
 
-        loss_value, loss_val_dict = self.decoder_loss_step(
+        loss_value = self.decoder_loss_step(
             spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=target_codes
         )
 
@@ -168,8 +167,8 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
             'global_step': self.trainer.global_step,
         }
 
-        for loss_name, loss_val in loss_val_dict.items():
-            tensorboard_logs['train_' + loss_name] = loss_val
+        # for loss_name, loss_val in loss_val_dict.items():
+        #     tensorboard_logs['train_' + loss_name] = loss_val
 
         if self.feat_pen:
             loss_value += self.feat_pen
@@ -182,10 +181,10 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
         spectrograms, spec_masks, encoded, encoded_len, _ = self.forward(
                 input_signal=signal, input_signal_length=signal_len,
             )
-        loss_value, loss_val_dict = self.decoder_loss_step(spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=self.target_codes + self.valid_codes)
+        loss_value = self.decoder_loss_step(spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=self.target_codes + self.valid_codes)
         if self.feat_pen:
             loss_value += self.feat_pen
         del self._in_validation_step
-        loss_val_dict["val_loss"] = loss_value
-        return loss_val_dict
-
+        return {
+            'val_loss': loss_value,
+        }
