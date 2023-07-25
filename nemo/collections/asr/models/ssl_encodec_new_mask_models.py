@@ -44,26 +44,6 @@ from nemo.utils import logging
 
 class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSupervisedModel):
     """Base class for encoder-decoder models used for self-supervised encoder pre-training"""
-
-    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        cfg.model_defaults.decoding_mode = "base"
-        super().__init__(cfg=cfg, trainer=trainer)
-
-
-    @property
-    def input_types(self) -> Optional[Dict[str, NeuralType]]:
-        if hasattr(self.preprocessor, '_sample_rate'):
-            input_signal_eltype = AudioSignal(freq=self.preprocessor._sample_rate)
-        else:
-            input_signal_eltype = AudioSignal()
-        return {
-            "input_signal": NeuralType(('B', 'D', 'T'), input_signal_eltype, optional=True),
-            "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
-            "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
-            "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
-            "targets": NeuralType(('B', 'T'), LabelsType(), optional=True),
-            "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
-        }
     
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
