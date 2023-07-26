@@ -156,7 +156,15 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         signal, signal_len, targets, target_lengths = batch
-        codes = self.target_codes + random.sample(self.valid_codes, self.n_decoders)
+        if torch.distributed.get_rank() == 0:
+             # Assumes world_size of 3.
+            codes = self.target_codes + random.sample(self.valid_codes, self.n_decoders)
+        else:
+            codes = len(self.target_codes) + self.n_decoders
+            # Assumes backend is not NCCL
+            device = self.device
+            torch.distributed.broadcast_object_list(codes, src=0, device=device)
+        
         spectrograms, spec_masks, encoded, encoded_len = self.forward(
             input_signal=signal, input_signal_length=signal_len, selected_heads=codes
         )
