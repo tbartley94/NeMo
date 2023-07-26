@@ -172,6 +172,7 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
 
         if self.feat_pen:
             loss_value += self.feat_pen
+        #tensorboard_logs["loss"] = loss_value
         return {'loss': loss_value, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):            
@@ -188,3 +189,8 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
         return {
             'val_loss': loss_value,
         }
+    
+    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
+        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+        tensorboard_logs = {'val_loss': val_loss_mean}
+        return {'val_loss': val_loss_mean, 'log': tensorboard_logs}
