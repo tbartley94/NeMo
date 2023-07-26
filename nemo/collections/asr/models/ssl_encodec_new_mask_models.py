@@ -46,18 +46,24 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
     """Base class for encoder-decoder models used for self-supervised encoder pre-training"""
     
     @property
-    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+    def input_types(self) -> Optional[Dict[str, NeuralType]]:
+        if hasattr(self.preprocessor, '_sample_rate'):
+            input_signal_eltype = AudioSignal(freq=self.preprocessor._sample_rate)
+        else:
+            input_signal_eltype = AudioSignal()
         return {
-            "spectrograms": NeuralType(('B', 'D', 'T'), SpectrogramType()),
-            "spec_masks": NeuralType(('B', 'D', 'T'), SpectrogramType()),
-            "encoded": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
-            "encoded_len": NeuralType(tuple('B'), LengthsType()),
+            "input_signal": NeuralType(('B', 'D', 'T'), input_signal_eltype, optional=True),
+            "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
+            "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "targets": NeuralType(('B', 'T'), LabelsType(), optional=True),
+            "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
             "selected_heads": NeuralType(tuple('C'), LengthsType())
         }
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None, selected_heads=[]
     ):
         """
         Forward pass of the model.
@@ -97,8 +103,7 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
             input_signal = torch.where(input_signal == self.n_codebooks*self.codebook_size, self.preprocessor.pad_value, input_signal)
         
         if self.apply_masking:
-            codes = self.target_codes + random.sample(self.valid_codes, self.n_decoders)
-            input_signal = self.spec_augmentation(input_spec=input_signal, length=input_signal_length, codes=codes)
+            input_signal = self.spec_augmentation(input_spec=input_signal, length=input_signal_length, codes=selected_heads)
         masked_spectrograms = input_signal.detach()
         spec_masks = (masked_spectrograms == self.spec_augmentation.padding_idx).float()
         for idx, proc_len in enumerate(input_signal_length):
@@ -113,7 +118,7 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
         spec_masks = torch.nn.functional.pad(spec_masks, (0, processed_signal.shape[-1] - spec_masks.shape[-1]), value=0.0)
 
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
-        return spectrograms, spec_masks, encoded, encoded_len, codes
+        return spectrograms, spec_masks, encoded, encoded_len
 
     def decoder_loss_step(self, spectrograms, spec_masks, encoded, encoded_len, targets=None, target_lengths=None, selected_heads=None):
         """
@@ -151,15 +156,16 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         signal, signal_len, targets, target_lengths = batch
-        spectrograms, spec_masks, encoded, encoded_len, target_codes = self.forward(
-            input_signal=signal, input_signal_length=signal_len,
+        codes = self.target_codes + random.sample(self.valid_codes, self.n_decoders)
+        spectrograms, spec_masks, encoded, encoded_len = self.forward(
+            input_signal=signal, input_signal_length=signal_len, selected_heads=codes
         )
 
         if hasattr(self.loss, "set_num_updates"):
             self.loss.set_num_updates(self.trainer.global_step)
 
         loss_value = self.decoder_loss_step(
-            spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=target_codes
+            spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=codes
         )
 
         tensorboard_logs = {
@@ -179,10 +185,11 @@ class SpeechEncDecEnCodecNewMaskSelfSupervisedModel(SpeechEncDecEnCodecSelfSuper
         # Set flag to register tensors
         self._in_validation_step = True
         signal, signal_len, targets, target_lengths = batch
-        spectrograms, spec_masks, encoded, encoded_len, _ = self.forward(
-                input_signal=signal, input_signal_length=signal_len,
+        codes = self.target_codes + self.valid_codes
+        spectrograms, spec_masks, encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len, selected_heads=codes
             )
-        loss_value = self.decoder_loss_step(spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=self.target_codes + self.valid_codes)
+        loss_value = self.decoder_loss_step(spectrograms=spectrograms, spec_masks=spec_masks, encoded=encoded, encoded_len=encoded_len, targets=targets, target_lengths=target_lengths, selected_heads=codes)
         if self.feat_pen:
             loss_value += self.feat_pen
         del self._in_validation_step
