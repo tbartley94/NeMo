@@ -373,7 +373,6 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             processed_signal, processed_signal_length = self.preprocessor(
                 input_signal=input_signal, length=input_signal_length,
             )
-
         if self.pen_factor:
             self.feat_pen = processed_signal.float().pow(2).mean() * self.pen_factor
         spectrograms = processed_signal.detach().clone()
