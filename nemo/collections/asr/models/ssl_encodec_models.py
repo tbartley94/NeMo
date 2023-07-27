@@ -30,6 +30,8 @@ import torch.nn as nn
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 
+from nemo.core.classes.module import NeuralModule
+
 from nemo.collections.asr.models.ssl_models import SpeechEncDecSelfSupervisedModel
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
@@ -38,6 +40,20 @@ from nemo.core.classes.common import typecheck
 from nemo.utils import logging
 
 
+class EncDecQuantize(NeuralModule):
+    def __init__(self):
+        super().__init__()
+        self.weight = None
+    
+    def forward(self, x):
+        embed = self.weight.t()
+        dist = torch.stack([-(
+            x[idx].pow(2).sum(1, keepdim=True)
+            - 2 * x[idx] @ embed 
+            + embed.pow(2).sum(0, keepdim=True)
+        ) for idx in range(x.shape[0])], dim=0)
+        return dist
+    
 class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     """Base class for encoder-decoder models used for self-supervised encoder pre-training"""
 
@@ -54,29 +70,26 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         self.target_codes = target_codes
         self.n_decoders = self._cfg.model_defaults.get("n_decoders_to_use", len(valid_codes))
 
-        self.decoding_mode = self._cfg.model_defaults.get("decoding_mode", "linear")
+        self.decoding_mode = self._cfg.model_defaults.get("decoding_mode", False)
         if self.decoding_mode == "base":
             self._cfg.decoder.feat_out = self.codebook_size
             self.heads = nn.ModuleList([self.from_config_dict(self._cfg.decoder) for _ in range(self.n_codebooks)])
-            self.decoder_ssl = None
+            self.decoder_ssl = nn.Identity()
         elif self.decoding_mode == "single":
             self._cfg.decoder.feat_out = self.n_codebooks * self.codebook_size
             self.decoder_ssl = self.from_config_dict(self._cfg.decoder)
-            self.heads = None
         elif self.decoding_mode == "linear":
             self.heads = nn.ModuleList([nn.Linear(self._cfg.decoder_out, self.codebook_size) for _ in range(self.n_codebooks)])
+        elif self.decoding_mode == "embedding":
+            self.heads = nn.ModuleList([self.from_config_dict(self._cfg.decoder) for _ in range(self.n_codebooks)])
+            embedding = self.preprocessor.embedding.weight
+            self.decoder_ssl = nn.Linear(self._cfg.decoder.feat_out, embedding.shape[0])  # for embedding
+            self.decoder_ssl.weight = embedding
+        elif self.decoding_mode == "quantize":
+            self.heads = nn.ModuleList([self.from_config_dict(self._cfg.decoder) for _ in range(self.n_codebooks)])
+            self.decoder_ssl = self.preprocessor.embedding.weight
         else:
             assert False
-
-
-    def _quantize(self, x, head):
-        embed = head.t()
-        dist = torch.stack([-(
-            x[idx].pow(2).sum(1, keepdim=True)
-            - 2 * x[idx] @ embed 
-            + embed.pow(2).sum(0, keepdim=True)
-        ) for idx in range(x.shape[0])], dim=0)
-        return dist
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if 'augmentor' in config:
@@ -275,7 +288,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                 input_signal=signal, input_signal_length=signal_len,
             )
 
-        loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
+        loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len)
 
         if self.feat_pen:
             loss_value += self.feat_pen
