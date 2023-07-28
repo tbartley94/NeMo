@@ -39,20 +39,6 @@ from nemo.core.classes.common import typecheck
 
 from nemo.utils import logging
 
-
-class EncDecQuantize(NeuralModule):
-    def __init__(self):
-        super().__init__()
-        self.weight = None
-    
-    def forward(self, x):
-        embed = self.weight.t()
-        dist = torch.stack([-(
-            x[idx].pow(2).sum(1, keepdim=True)
-            - 2 * x[idx] @ embed 
-            + embed.pow(2).sum(0, keepdim=True)
-        ) for idx in range(x.shape[0])], dim=0)
-        return dist
     
 class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     """Base class for encoder-decoder models used for self-supervised encoder pre-training"""
@@ -279,30 +265,30 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             "target_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
-    def validation_step(self, batch, batch_idx, dataloader_idx=0):            
-        # Set flag to register tensors
-        self._in_validation_step = True
+    # def validation_step(self, batch, batch_idx, dataloader_idx=0):            
+    #     # Set flag to register tensors
+    #     self._in_validation_step = True
 
-        signal, signal_len, targets, target_lengths = batch
-        spectrograms, spec_masks, encoded, encoded_len = self.forward(
-                input_signal=signal, input_signal_length=signal_len,
-            )
+    #     signal, signal_len, targets, target_lengths = batch
+    #     spectrograms, spec_masks, encoded, encoded_len = self.forward(
+    #             input_signal=signal, input_signal_length=signal_len,
+    #         )
 
-        loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len)
+    #     loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len)
 
-        if self.feat_pen:
-            loss_value += self.feat_pen
+    #     if self.feat_pen:
+    #         loss_value += self.feat_pen
 
-        # reset access registry
-        self.reset_registry()
-        del self._in_validation_step
-        loss_val_dict["val_loss"] = loss_value
-        return loss_val_dict
+    #     # reset access registry
+    #     self.reset_registry()
+    #     del self._in_validation_step
+    #     loss_val_dict["val_loss"] = loss_value
+    #     return loss_val_dict
 
-    # PTL-specific methods
-    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
-        loss_dict = {}
-        for key in outputs[0].keys():
-            loss_dict[key] = torch.stack([x[key] for x in outputs]).mean()
-        loss_dict['log'] = {k: v for k, v in loss_dict.items()}
-        return loss_dict
+    # # PTL-specific methods
+    # def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
+    #     loss_dict = {}
+    #     for key in outputs[0].keys():
+    #         loss_dict[key] = torch.stack([x[key] for x in outputs]).mean()
+    #     loss_dict['log'] = {k: v for k, v in loss_dict.items()}
+    #     return loss_dict
