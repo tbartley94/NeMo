@@ -218,6 +218,43 @@ class WaveformFeaturizer(object):
 
         return cls(sample_rate=sample_rate, int_values=int_values, augmentor=aa)
 
+class AudioCodesFeaturizer(object):
+    """Simple module to load audio codes from npz files 
+    """
+    def __init__(
+        self,
+        n_codebooks_to_use: int,
+        codebook_size: int,
+        augmentor: Optional["nemo.collections.asr.parts.perturb.AudioAugmentor"] = None,
+    ):
+        self.n_codebooks_to_use = n_codebooks_to_use
+        self.codebook_size = codebook_size
+        self.augmentor = augmentor if augmentor is not None else AudioAugmentor()
+    
+    def _scale_codebooks(self, codes):
+        codes = codes.copy()
+        for n in range(1, codes.shape[0]):
+            codes[n, :] += self.codebook_size * n
+        return codes
+
+    def process(self, file_path):
+        """load npz file from filepath
+        """
+        codes = np.load(file_path)
+        codes = codes["codes"]  # [n_codebooks, n_frames]  
+        
+        # if n_codebooks_to_use is greater than the number of codebooks in the file, raise error
+        if self.n_codebooks_to_use is not None and self.n_codebooks_to_use > codes.shape[0]:
+            raise ValueError(
+                f"n_codebooks_to_use ({self.n_codebooks_to_use}) is greater than the number of codebooks in the file ({codes.shape[0]})."
+            )
+        
+        assert len(codes.shape) == 2, f"codes must be 2D, got {len(codes.shape)}"
+
+        if self.n_codebooks_to_use is not None:
+            codes = codes[:self.n_codebooks_to_use, :]
+        codes = self._scale_codebooks(codes)  # codebooks need to be scaled to 0 - n_codbookes * codebook_size for embeddings
+        return torch.tensor(codes, dtype=torch.long)   # [n_codebooks, T]  embedding layers expects int or long
 
 class FeaturizerFactory(object):
     def __init__(self):

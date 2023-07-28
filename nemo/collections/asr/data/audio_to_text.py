@@ -25,7 +25,7 @@ import webdataset as wd
 from torch.utils.data import ChainDataset
 from tqdm import tqdm
 
-from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer, AudioCodesFeaturizer
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.common import tokenizers
 from nemo.collections.common.parts.preprocessing import collections, parsers
@@ -45,12 +45,13 @@ from nemo.utils.get_rank import is_global_rank_zero
 __all__ = [
     'AudioToCharDataset',
     'AudioToBPEDataset',
+    'AudioCodesToCharDataset',
     'TarredAudioToCharDataset',
     'TarredAudioToBPEDataset',
 ]
 
 
-def _speech_collate_fn(batch, pad_id):
+def _speech_collate_fn(batch, pad_id, audio_pad_id = None):
     """collate batch of audio sig, audio len, tokens, tokens len
     Args:
         batch (Optional[FloatTensor], Optional[LongTensor], LongTensor,
@@ -82,7 +83,7 @@ def _speech_collate_fn(batch, pad_id):
             sig_len = sig_len.item()
             if sig_len < max_audio_len:
                 pad = (0, max_audio_len - sig_len)
-                sig = torch.nn.functional.pad(sig, pad)
+                sig = torch.nn.functional.pad(sig, pad, mode='constant', value=0 if audio_pad_id is None else audio_pad_id)
             audio_signal.append(sig)
         tokens_i_len = tokens_i_len.item()
         if tokens_i_len < max_tokens_len:
@@ -102,7 +103,6 @@ def _speech_collate_fn(batch, pad_id):
     else:
         sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
         return audio_signal, audio_lengths, tokens, tokens_lengths, sample_ids
-
 
 class ASRManifestProcessor:
     """
@@ -704,6 +704,91 @@ class AudioToBPEDataset(_AudioTextDataset):
             channel_selector=channel_selector,
         )
 
+class AudioCodesToCharDataset(_AudioTextDataset):
+    """Inherit from AudioToCharDataset and replace featurizer and collate function
+    """
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports.
+               """
+        return {
+            'audio_signal': NeuralType(('B', 'D', 'T'), AudioSignal()),
+            'a_sig_length': NeuralType(tuple('B'), LengthsType()),
+            'transcripts': NeuralType(('B', 'T'), LabelsType()),
+            'transcript_length': NeuralType(tuple('B'), LengthsType()),
+            'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    def __init__(
+        self,
+        manifest_filepath: str,
+        labels: Union[str, List[str]],
+        codebook_size: int,
+        n_codebooks_to_use: int = None,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[int] = None,
+        min_duration: Optional[int] = None,
+        max_utts: int = 0,
+        blank_index: int = -1,
+        unk_index: int = -1,
+        normalize: bool = False,
+        bos_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        pad_id: int = 0,
+        parser: Union[str, Callable] = 'en',
+        return_sample_id: bool = False,
+        channel_selector: Optional[ChannelSelectorType] = None,
+    ):
+        self.labels = labels
+        parser = parsers.make_parser(
+            labels=labels, name=parser, unk_id=unk_index, blank_id=blank_index, do_normalize=normalize
+        )
+
+        super().__init__(
+            manifest_filepath=manifest_filepath,
+            parser=parser,
+            sample_rate=75,     # dummy value
+            int_values=False,   # dummy value
+            augmentor=augmentor,
+            max_duration=max_duration,
+            min_duration=min_duration,
+            max_utts=max_utts,
+            trim=False,        # dummy value
+            bos_id=bos_id,
+            eos_id=eos_id,
+            pad_id=pad_id,
+            return_sample_id=return_sample_id,
+            channel_selector=channel_selector,
+        )
+
+        self.codebook_size = codebook_size
+        self.n_codebooks_to_use = n_codebooks_to_use
+
+        # replace the waveform featurizer with something that can load audio
+        self.featurizer = AudioCodesFeaturizer(n_codebooks_to_use=n_codebooks_to_use,
+                                               codebook_size=codebook_size,
+                                               augmentor=augmentor)
+
+    def __getitem__(self, index):
+        sample = sample = self.manifest_processor.collection[index]
+        features = self.featurizer.process(
+            sample.audio_file,
+        )
+
+        f, fl = features, torch.tensor(features.shape[1]).long()
+        t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
+
+        if self.return_sample_id:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index
+        else:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long()
+
+        return output
+    
+    def _collate_fn(self, batch):
+        audio_pad_id = int(self.codebook_size * self.n_codebooks_to_use)
+        return _speech_collate_fn(batch, pad_id=self.manifest_processor.pad_id, audio_pad_id=audio_pad_id)
 
 class _TarredAudioToTextDataset(IterableDataset):
     """

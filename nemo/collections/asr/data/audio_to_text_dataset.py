@@ -155,6 +155,38 @@ def get_char_dataset(config: dict, augmentor: Optional['AudioAugmentor'] = None)
     )
     return dataset
 
+def get_audioCodes_to_text_char_dataset(
+    config: dict,
+    augmentor: Optional['AudioAugmentor'] = None,
+) -> audio_to_text.AudioCodesToCharDataset:
+    """Instantiates a AudioCodesToCharDataset.
+
+    Args:
+        config: Config of the AudioCodecToCharDataset.
+        augmentor: Optional AudioAugmentor object for augmentations on audio data.
+    Returns:
+        An instance of AudioCodesToBPEDataset.
+    """
+    if 'labels' not in config:
+        logging.warning(f"dataset does not have explicitly defined labels")
+
+    dataset  = audio_to_text.AudioCodesToCharDataset(
+        manifest_filepath=config['manifest_filepath'],
+        labels=config.get('labels', None),
+        n_codebooks_to_use=config['n_codebooks_to_use'],
+        codebook_size=config['codebook_size'],
+        augmentor=augmentor,
+        max_duration=config.get('max_duration', None),
+        min_duration=config.get('min_duration', None),
+        max_utts = config.get('max_utts', 0),
+        blank_index=config.get('blank_index', -1),
+        unk_index=config.get('unk_index', -1),
+        normalize=config.get('normalize_transcripts', False),
+        parser=config.get('parser', 'en'),
+        return_sample_id=config.get('return_sample_id', False),
+        channel_selector=config.get('channel_selector', None),
+    )
+    return dataset
 
 def get_concat_bpe_dataset(
     config: dict,

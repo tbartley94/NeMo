@@ -56,10 +56,12 @@ except ModuleNotFoundError:
 __all__ = [
     'AudioToMelSpectrogramPreprocessor',
     'AudioToSpectrogram',
+    'AudioCodeToEmbeddingPreprocessor',
     'SpectrogramToAudio',
     'AudioToMFCCPreprocessor',
     'SpectrogramAugmentation',
     'MaskedPatchAugmentation',
+    'CodePatchAugmentation',
     'CropOrPadSpectrogramAugmentation',
 ]
 
@@ -434,6 +436,99 @@ class AudioToMFCCPreprocessor(AudioPreprocessor):
         return features, seq_len
 
 
+class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
+    """Simple Embedding module to convert codes to latent vectors
+    Args:
+        codec_vocab_size: total size of vocabulary
+        embedding_dim: dimension of the embedding
+        embedding_out_dim: dimension of the output embedding
+        padding_idx: padding index
+    """
+    def __init__(
+        self,
+        codebook_size: int,
+        n_codebooks_to_use: int,
+        embedding_dim: int=512,
+        embedding_out_dim: int=512,
+        codebook_aggregation: Optional[str]=None,
+        padding_idx: Optional[int]=None,
+        pad_to: int = 0,
+        init_from_encodec: str = None,
+        freeze: bool = False,
+    ):
+        super().__init__()
+        self.codebook_size = codebook_size
+        self.n_codebooks_to_use = n_codebooks_to_use
+        self.codebook_aggregation = codebook_aggregation
+
+        codec_vocab_size = self.codebook_size * self.n_codebooks_to_use
+
+        self.pad_to = pad_to
+        self.pad_value = padding_idx if padding_idx else codec_vocab_size
+
+        if init_from_encodec is not None:
+            logging.info("Copying over Encodec parameters.")
+            encodec = torch.load(init_from_encodec)
+            codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks_to_use)]
+            codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
+            codebooks = torch.cat(codebooks)
+            self.embedding = torch.nn.Embedding.from_pretrained(codebooks, freeze=freeze, padding_idx=self.pad_value)
+        else:
+            if padding_idx is not None:
+                self.embedding = torch.nn.Embedding(
+                    num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
+                    embedding_dim=embedding_dim,
+                    padding_idx=padding_idx,
+                )
+            else:
+                self.embedding = torch.nn.Embedding(
+                    num_embeddings=codec_vocab_size,
+                    embedding_dim=embedding_dim,
+                )
+
+        # out projection
+        if self.codebook_aggregation == 'stacking':
+            self.out_projection = torch.nn.Linear(
+                in_features=embedding_dim * n_codebooks_to_use,
+                out_features=embedding_out_dim,
+            )
+        else:
+            self.out_projection = torch.nn.Linear(
+                    in_features=embedding_dim,
+                    out_features=embedding_out_dim,
+            )
+
+    def forward(self, 
+                input_signal: torch.Tensor,
+                length: Optional[torch.Tensor] = None
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Convert a batch of input codes to a batch of embeddings
+        Args:
+            input_signal: input codes of shape (B, D, T)
+            length: length of each input code sequence of shape (B,)
+        Returns:
+            output: embeddings of shape (B, embedding_dim, T)
+            output_length: length of each output embedding sequence of shape (B,)
+        """
+        # Apply padding before embedding.
+        if self.pad_to > 0:
+            pad_amt = (input_signal.size(-1)) % self.pad_to
+            if pad_amt != 0:
+                input_signal = torch.nn.functional.pad(input_signal, (0, self.pad_to - pad_amt), value=self.pad_value)
+        output = self.embedding(input_signal)
+        # [B, C, T, D]
+        if self.codebook_aggregation == 'sum':
+            output = torch.sum(output, dim=1)
+            # [B, T, D]
+        # output projection 
+        if self.out_projection is not None:
+            output = self.out_projection(output)
+        output = torch.transpose(output, -1, -2)    # to be consistent with other preprocessors
+        # [B, D, T]
+        output_length = length
+        return output, output_length
+
+
 class SpectrogramAugmentation(NeuralModule):
     """
     Performs time and freq cuts in one of two ways.
@@ -617,6 +712,50 @@ class MaskedPatchAugmentation(NeuralModule):
         if self.spec_augment is not None:
             augmented_spec = self.spec_augment(input_spec=augmented_spec, length=length)
 
+        return augmented_spec
+
+
+class CodePatchAugmentation(NeuralModule):
+    def __init__(
+        self, patch_size: int = 48, mask_patches: float = 10.0, mask_value: int = 0, n_codes: int = 8, n_targets: int = 1, target_codes: list = [], exclude_codes: list = []
+    ):
+        super().__init__()
+        self.n_targets = n_targets
+        self.target_codes = target_codes
+        self.valid_codes = [n for n in range(n_codes) if n not in target_codes and n not in exclude_codes]
+
+        self.patch_size = patch_size
+        self.mask_value = mask_value
+        if mask_patches >= 1:
+            self.mask_patches = int(mask_patches)
+        elif mask_patches >= 0:
+            self._mask_fraction = mask_patches
+            self.mask_patches = None
+        else:
+            raise ValueError('mask_patches cannot be negative')
+        
+    @typecheck()
+    def forward(self, input_spec, length):
+        augmented_spec = input_spec
+        min_len = torch.min(length)
+        if self.mask_patches is None:
+            # masking specified as fraction
+            len_fraction = int(min_len * self._mask_fraction)
+            mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
+        else:
+            mask_patches = self.mask_patches
+
+        if min_len < self.patch_size * mask_patches:
+            mask_patches = min_len // self.patch_size
+        
+        for idx in range(input_spec.shape[0]):
+            cur_len = length[idx]
+            patches = range(cur_len // self.patch_size)
+            codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
+            for q in codes:
+                masked_patches = random.sample(patches, mask_patches)
+                for mp in masked_patches:
+                    augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value # padding value
         return augmented_spec
 
 
