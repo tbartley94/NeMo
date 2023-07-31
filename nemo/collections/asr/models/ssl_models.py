@@ -501,6 +501,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
         )
 
         tensorboard_logs = {
+            'train_loss': loss_value,
             'learning_rate': self._optimizer.param_groups[0]['lr'],
             'global_step': self.trainer.global_step,
         }

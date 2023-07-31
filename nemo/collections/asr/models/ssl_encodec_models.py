@@ -80,7 +80,8 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
 
         self.decode_mode = self._cfg.model_defaults.get("decode_mode", "base")
-        self.codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 for _ in range(self.n_codebooks)])
+        codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 for _ in range(self.n_codebooks)])
+        self.register_buffer("codebook_weights", torch.tensor(codebook_weights))
         if self.decode_mode == "base":
             self._cfg.decoder.feat_out = self.codebook_size
             self.decoder_ssl = nn.ModuleList(nn.Identity()  for _ in range(self.n_codebooks)) # Just a dummy value so decoder looks nice
@@ -120,21 +121,34 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         shuffle = config['shuffle']
         device = 'gpu' if torch.cuda.is_available() else 'cpu'
         if config.get('use_dali', False):
-            logging.warning(
-                "Dali is not enabled for this model type"
-            )
+            device_id = self.local_rank if device == 'gpu' else None
+            logging.warning(f"Dali dataset is not supported")
             return None
         # Instantiate tarred dataset loader or normal dataset loader
         if config.get('is_tarred', False):
-            logging.warning(
-                "Tarred datasets are not enabled for this model type"
+            if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
+                'manifest_filepath' in config and config['manifest_filepath'] is None
+            ):
+                logging.warning(
+                    "Could not load dataset as `manifest_filepath` was None or "
+                    f"`tarred_audio_filepaths` is None. Provided config : {config}"
+                )
+                return None
+
+            shuffle_n = config.get('shuffle_n', 4 * config['batch_size']) if shuffle else 0
+            dataset = audio_to_text_dataset.get_tarred_audioCodes_dataset(
+                config=config,
+                shuffle_n=shuffle_n,
+                global_rank=self.global_rank,
+                world_size=self.world_size,
+                augmentor=augmentor,
             )
-            return None
+            shuffle = False
         else:
             if 'manifest_filepath' in config and config['manifest_filepath'] is None:
                 logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
                 return None
-            
+        
             dataset = audio_to_text_dataset.get_audioCodes_to_text_char_dataset(config=config, augmentor=augmentor)
 
         if hasattr(dataset, 'collate_fn'):
@@ -227,8 +241,8 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         return spectrograms, spec_masks, encoded, encoded_len
 
     def decoder_loss_step(self, spectrograms, spec_masks, encoded, encoded_len, targets=None, target_lengths=None):
-        loss_value = encoded.new_tensor(self.codebook_weights)
         loss_val_dict = {}
+        loss_value = encoded.new_zeros(self.n_codebooks)
         
         # -> BxTxD
         for idx in range(self.n_codebooks):
@@ -240,5 +254,5 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                     decoder_outputs=nn.functional.log_softmax(logits, -1),
                     targets= spectrograms[:,idx,:] - self.codebook_size*idx,  # We only calculate loss in relation to codebook
                 )
-                loss_value[idx] *= curr_loss
+                loss_value[idx] = self.codebook_weights[idx] * curr_loss
         return loss_value[loss_value != 0].mean(), loss_val_dict  # nonzero loss values only

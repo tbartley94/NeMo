@@ -169,7 +169,6 @@ def get_audioCodes_to_text_char_dataset(
     """
     if 'labels' not in config:
         logging.warning(f"dataset does not have explicitly defined labels")
-
     dataset  = audio_to_text.AudioCodesToCharDataset(
         manifest_filepath=config['manifest_filepath'],
         labels=config.get('labels', None),
@@ -427,6 +426,88 @@ def get_tarred_dataset(
         else:
             datasets.append(dataset)
 
+    return get_chain_dataset(datasets=datasets, ds_config=config, rank=global_rank)
+
+
+def get_tarred_audioCodes_dataset(
+    config: dict,
+    shuffle_n: int,
+    global_rank: int,
+    world_size: int,
+    augmentor: Optional['AudioAugmentor'] = None,
+) -> Union[audio_to_text.TarredAudioToBPEDataset, audio_to_text.TarredAudioToCharDataset]:
+    """
+    Instantiates a Word Piece/BPE Encoding based TarredAudioToBPEDataset or a char based TarredAudioToCharDataset.
+
+    Args:
+        config: Config of the TarredAudioToBPEDataset or TarredAudioToCharDataset.
+        shuffle_n: How many samples to look ahead and load to be shuffled.
+            See WebDataset documentation for more details.
+        tokenizer: An instance of a TokenizerSpec object if BPE dataset is needed.
+        global_rank: Global rank of this device.
+        world_size: Global world size in the training method.
+            Passsing None would return a char-based dataset.
+        augmentor: Optional AudioAugmentor object for augmentations on audio data.
+
+    Returns:
+        An instance of TarredAudioToBPEDataset or TarredAudioToCharDataset.
+    """
+    tarred_audio_filepaths = config['tarred_audio_filepaths']
+    manifest_filepaths = config['manifest_filepath']
+    datasets = []
+    tarred_audio_filepaths = convert_to_config_list(tarred_audio_filepaths)
+    manifest_filepaths = convert_to_config_list(manifest_filepaths)
+
+    bucketing_weights = config.get('bucketing_weights', None)  # For upsampling buckets
+    if bucketing_weights:
+        for idx, weight in enumerate(bucketing_weights):
+            if not isinstance(weight, int) or weight <= 0:
+                raise ValueError(f"bucket weights must be positive integers")
+
+    if len(manifest_filepaths) != len(tarred_audio_filepaths):
+        raise ValueError(
+            f"manifest_filepaths (length={len(manifest_filepaths)}) and tarred_audio_filepaths (length={len(tarred_audio_filepaths)}) need to have the same number of buckets."
+        )
+
+    if 'labels' not in config:
+        logging.warning(f"dataset does not have explicitly defined labels")
+
+    if 'max_utts' in config:
+        raise ValueError('"max_utts" parameter is not supported for tarred datasets')
+
+    for dataset_idx, (tarred_audio_filepath, manifest_filepath) in enumerate(
+        zip(tarred_audio_filepaths, manifest_filepaths)
+    ):
+        if len(tarred_audio_filepath) == 1:
+            tarred_audio_filepath = tarred_audio_filepath[0]
+        if len(manifest_filepath) == 1:
+            manifest_filepath = manifest_filepath[0]
+
+        dataset = audio_to_text.TarredAudioCodesToCharDataset(
+            audio_tar_filepaths=tarred_audio_filepath,
+            manifest_filepath=manifest_filepath,
+            labels=config.get('labels', None),
+            n_codebooks_to_use=config['n_codebooks_to_use'],
+            codebook_size=config['codebook_size'],
+            augmentor=augmentor,
+            shuffle_n=shuffle_n,
+            max_duration=config.get('max_duration', None),
+            min_duration=config.get('min_duration', None),
+            blank_index=config.get('blank_index', -1),
+            unk_index=config.get('unk_index', -1),
+            normalize=config.get('normalize_transcripts', False),
+            parser=config.get('parser', 'en'),
+            shard_strategy=config.get('tarred_shard_strategy', 'scatter'),
+            shard_manifests=config.get('shard_manifests', False),
+            global_rank=global_rank,
+            world_size=world_size,
+            return_sample_id=config.get('return_sample_id', False),
+        )
+        logging.warning(f"dataset does not have explicitly defined labels")
+        if bucketing_weights:
+            [datasets.append(dataset) for _ in range(bucketing_weights[dataset_idx])]
+        else:
+            datasets.append(dataset)
     return get_chain_dataset(datasets=datasets, ds_config=config, rank=global_rank)
 
 

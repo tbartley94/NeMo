@@ -1228,6 +1228,131 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             return_sample_id=return_sample_id,
         )
 
+class TarredAudioCodesToCharDataset(_TarredAudioToTextDataset):
+    def __init__(
+        self,
+        audio_tar_filepaths: Union[str, List[str]],
+        manifest_filepath: str,
+        labels: List[str],
+        n_codebooks_to_use=-1,
+        codebook_size=-1,
+        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+        shuffle_n: int = 0,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        blank_index: int = -1,
+        unk_index: int = -1,
+        normalize: bool = True,
+        bos_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        parser: Optional[str] = 'en',
+        pad_id: int = 0,
+        shard_strategy: str = "scatter",
+        shard_manifests: bool = False,
+        global_rank: int = 0,
+        world_size: int = 0,
+        return_sample_id: bool = False,
+    ):
+        self.labels = labels
+
+        parser = parsers.make_parser(
+            labels=labels, name=parser, unk_id=unk_index, blank_id=blank_index, do_normalize=normalize
+        )
+
+        super().__init__(
+            audio_tar_filepaths=audio_tar_filepaths,
+            manifest_filepath=manifest_filepath,
+            parser=parser,
+            sample_rate=75,  # Dummy
+            int_values=False,  # Dummy
+            augmentor=augmentor,
+            shuffle_n=shuffle_n,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            trim=False,  # Dummy
+            bos_id=bos_id,
+            eos_id=eos_id,
+            pad_id=pad_id,
+            shard_strategy=shard_strategy,
+            shard_manifests=shard_manifests,
+            global_rank=global_rank,
+            world_size=world_size,
+            return_sample_id=return_sample_id,
+        )
+        self.n_codebooks = n_codebooks_to_use
+        self.codebook_size = codebook_size
+
+        self.featurizer = AudioCodesFeaturizer(n_codebooks_to_use=n_codebooks_to_use,
+                                               codebook_size=codebook_size,
+                                               augmentor=augmentor)
+
+        # Put together WebDataset
+        audio_tar_filepaths = expand_sharded_filepaths(
+            sharded_filepaths=audio_tar_filepaths,
+            shard_strategy=shard_strategy,
+            world_size=world_size,
+            global_rank=global_rank,
+        )
+        self._dataset = wd.WebDataset(urls=audio_tar_filepaths, nodesplitter=None)
+
+        if shuffle_n > 0:
+            self._dataset = self._dataset.shuffle(shuffle_n)
+        else:
+            logging.info("WebDataset will not shuffle files within the tar files.")
+
+        self._dataset = (
+            self._dataset.rename(audio='npz', key='__key__')
+            .to_tuple('audio', 'key')
+            .pipe(self._filter)
+            .pipe(self._loop_offsets)
+            .map(f=self._build_sample)
+        )
+
+
+    def _collate_fn(self, batch):
+        audio_pad_id = int(self.codebook_size * self.n_codebooks)
+        return _speech_collate_fn(batch, pad_id=self.manifest_processor.pad_id, audio_pad_id=audio_pad_id)
+
+    def _build_sample(self, tup):
+        """Builds the training sample by combining the data from the WebDataset with the manifest info.
+        """
+        audio_bytes, audio_filename, offset_id = tup
+
+        # Grab manifest entry from self.manifest_preprocessor.collection
+        file_id, _ = os.path.splitext(os.path.basename(audio_filename))
+        manifest_idx = self.manifest_processor.collection.mapping[file_id][offset_id]
+        manifest_entry = self.manifest_processor.collection[manifest_idx]
+
+        offset = manifest_entry.offset
+        if offset is None:
+            offset = 0
+
+        # Convert audio bytes to IO stream for processing (for SoundFile to read)
+        audio_filestream = io.BytesIO(audio_bytes)
+        features = self.featurizer.process(
+            audio_filestream,
+        )
+        audio_filestream.close()
+
+        # Audio features
+        f, fl = features, torch.tensor(features.shape[1]).long()
+
+        # Text features
+        t, tl = manifest_entry.text_tokens, len(manifest_entry.text_tokens)
+
+        self.manifest_processor.process_text_by_sample(sample=manifest_entry)
+
+        if self.bos_id is not None:
+            t = [self.bos_id] + t
+            tl += 1
+        if self.eos_id is not None:
+            t = t + [self.eos_id]
+            tl += 1
+        if self.return_sample_id:
+            return f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), manifest_idx
+        else:
+            return f, fl, torch.tensor(t).long(), torch.tensor(tl).long()
+        
 
 class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
     """
