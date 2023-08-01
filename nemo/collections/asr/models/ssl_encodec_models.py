@@ -73,30 +73,31 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     """Base class for encoder-decoder models used for self-supervised encoder pre-training"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        self.codebook_size = cfg.model_defaults.codebook_size
+        self.n_codebooks = cfg.model_defaults.n_codebooks_to_use
+        self.output_dim = cfg.decoder.feat_out
+
+        cfg.decoder.feat_out *= self.n_codebooks  # predicting n codebooks at a time. 
         super().__init__(cfg=cfg, trainer=trainer)
+
         if self._cfg.preprocessor.get("init_from_encodec", False):
             self._cfg.preprocessor.init_from_encodec = None  # To stop from reloading every training.
-        self.codebook_size = self._cfg.model_defaults.codebook_size
-        self.n_codebooks = self._cfg.model_defaults.n_codebooks_to_use
+
+        codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 for _ in range(self.n_codebooks)])
+        self.register_buffer("codebook_weights", torch.tensor(codebook_weights, requires_grad=False))
 
         self.decode_mode = self._cfg.model_defaults.get("decode_mode", "base")
-        codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 for _ in range(self.n_codebooks)])
-        self.register_buffer("codebook_weights", torch.tensor(codebook_weights))
         if self.decode_mode == "base":
-            self._cfg.decoder.feat_out = self.codebook_size
-            self.decoder_ssl = nn.ModuleList(nn.Identity()  for _ in range(self.n_codebooks)) # Just a dummy value so decoder looks nice
+            self.heads = nn.ModuleList(nn.Linear(self.output_dim, self.codebook_size) for _ in range(self.n_codebooks)) # Just a dummy value so decoder looks nice
         else:
             codebooks = self.preprocessor.embedding.weight #[self.preprocessor.embedding.weight[idx*self.codebook_size:(idx+1)*self.codebook_size] for idx in range(self.n_codebooks)]
             if self.decode_mode == "quantize":
-                self.decoder_ssl = nn.ModuleList(Quantizer(codebooks, q, self.codebook_size) for q in range(self.n_codebooks))
+                self.heads = nn.ModuleList(Quantizer(codebooks, q, self.codebook_size) for q in range(self.n_codebooks))
             elif self.decode_mode == "embed":
-                self.decoder_ssl = nn.ModuleList(EmbProj(codebooks, q, self.codebook_size) for q in range(self.n_codebooks))
+                self.heads = nn.ModuleList(EmbProj(codebooks, q, self.codebook_size) for q in range(self.n_codebooks))
             else:
                 assert False
-        self.heads = nn.ModuleList(self.from_config_dict(self._cfg.decoder)  for _ in range(self.n_codebooks))
         
-
-
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
         if hasattr(self.preprocessor, '_sample_rate'):
@@ -244,11 +245,12 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         loss_val_dict = {}
         loss_value = encoded.new_zeros(self.n_codebooks)
         
+        decoded = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD
         for idx in range(self.n_codebooks):
             if torch.any(spec_masks[:,idx,:]):
-                decoded = self.heads[idx](encoder_output=encoded)
-                logits = self.decoder_ssl[idx](decoded)
+                decoded_q = decoded[:,:,idx*self.output_dim:(idx+1)*self.output_dim]
+                logits = self.heads[idx](decoded_q)
                 curr_loss = self.loss(
                     spec_masks=spec_masks[:,idx,:].unsqueeze(dim=1),
                     decoder_outputs=nn.functional.log_softmax(logits, -1),
