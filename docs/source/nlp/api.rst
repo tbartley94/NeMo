@@ -102,46 +102,6 @@ Modules
     :no-members:
     :members: forward
 
-<<<<<<< HEAD
-
-Datasets
---------
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset.BlendableDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.gpt_dataset.GPTDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.gpt_dataset.MockGPTDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.bert_dataset.BertDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.base_prompt_learning_dataset.BasePromptLearningDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset.GPTSFTDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset.GPTSFTChatDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.retro_dataset.RETRODataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.t5_dataset.T5Dataset
-    :show-inheritance: 
-    :exclude-members: MAX_SEQ_LENGTH_DELTA
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.t5_prompt_learning_dataset.T5PromptLearningDataset
-    :show-inheritance: 
-
-.. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.ul2_dataset.UL2Dataset
-    :show-inheritance: 
-
-=======
 
 Datasets
 --------
@@ -190,4 +150,3 @@ Exportable Model Classes
    :maxdepth: 1
 
    megatron_onnx_export
->>>>>>> 7f4e8a50e80c5582e551ab98a60fccd4cc21fa7a
