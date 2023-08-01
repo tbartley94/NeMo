@@ -14,9 +14,15 @@
 
 
 MAJOR = 1
+<<<<<<< HEAD
 MINOR = 19
 PATCH = 1
 PRE_RELEASE = ''
+=======
+MINOR = 20
+PATCH = 0
+PRE_RELEASE = 'rc0'
+>>>>>>> 7f4e8a50e80c5582e551ab98a60fccd4cc21fa7a
 
 # Use the following formatting: (major, minor, patch, pre-release)
 VERSION = (MAJOR, MINOR, PATCH, PRE_RELEASE)

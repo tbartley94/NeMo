@@ -17,6 +17,7 @@ import os
 import re
 from typing import Any, Dict, Optional, Union
 
+import omegaconf
 import torch
 from omegaconf import open_dict
 from omegaconf.dictconfig import DictConfig
@@ -25,6 +26,7 @@ from pytorch_lightning.trainer.connectors.logger_connector.fx_validator import _
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.nlp_model import NLPModel
+from nemo.collections.nlp.modules.common.megatron.attention import HAVE_FLASH_ATTENTION
 from nemo.collections.nlp.modules.common.megatron.clip_grads import (
     clip_grad_norm_distributed_optimizer,
     clip_grad_norm_fp32,
@@ -64,7 +66,7 @@ class MegatronBaseModel(NLPModel):
 
     - Initialize the model parallel world for nemo.
     - Turn on all of the nvidia optimizations.
-    - If `cfg.tokenizer` is available, it loads the tokenizer and pad the vocab to the 
+    - If `cfg.tokenizer` is available, it loads the tokenizer and pad the vocab to the
       correct size for tensor model parallelism.
     - If using distributed optimizer, configure to be compatible
       with O2 level optimizations and/or model parallelism.
@@ -84,6 +86,12 @@ class MegatronBaseModel(NLPModel):
 
         if trainer is None:
             raise ValueError(f"Trainer cannot be None for Megatron-based models. Please provide a PTL trainer object.")
+
+        if cfg.get('use_flash_attention', False) and not HAVE_FLASH_ATTENTION:
+            raise ImportError(
+                "flash_attn was not found. Please see the installation instructions: https://github.com/HazyResearch/flash-attention."
+                "If you use flash_attn with triton. Please install triton==2.0.0.dev20221202."
+            )
 
         # this prevents base constructor from initializing tokenizer
         self.tokenizer = None
@@ -208,12 +216,18 @@ class MegatronBaseModel(NLPModel):
         self.tokenizer = get_nmt_tokenizer(
             library=self._cfg.tokenizer.library,
             model_name=self._cfg.tokenizer.type,
-            tokenizer_model=self.register_artifact("tokenizer.model", self._cfg.tokenizer.model),
-            vocab_file=self.register_artifact("tokenizer.vocab_file", self._cfg.tokenizer.vocab_file),
-            merges_file=self.register_artifact("tokenizer.merge_file", self._cfg.tokenizer.merge_file),
+            tokenizer_model=self.register_artifact("tokenizer.model", self._cfg.tokenizer.get('model', None)),
+            vocab_file=self.register_artifact("tokenizer.vocab_file", self._cfg.tokenizer.get('vocab_file', None)),
+            merges_file=self.register_artifact("tokenizer.merge_file", self._cfg.tokenizer.get('merge_file', None)),
+            use_fast=self.cfg.tokenizer.get('use_fast', False),
             delimiter=self.cfg.tokenizer.get('delimiter', None),
+            special_tokens=self.cfg.tokenizer.get('special_tokens', None),
             legacy=legacy,
         )
+
+        if self._cfg.tokenizer.get('additional_special_tokens', None) is not None:
+            tokens_list = omegaconf.OmegaConf.to_object(self._cfg.tokenizer.additional_special_tokens)
+            self.tokenizer.add_special_tokens({'additional_special_tokens': tokens_list})
 
     def on_train_start(self) -> None:
         super().on_train_start()
@@ -391,9 +405,8 @@ class MegatronBaseModel(NLPModel):
         optim_kwargs = {} if optim_kwargs is None else optim_kwargs.copy()
         if self.with_distributed_adam:
 
-            # Allocate contiguous buffers to avoid extra copies
+            # Allocate contiguous buffer to avoid extra copies
             optim_kwargs['contiguous_grad_buffer'] = True
-            optim_kwargs['contiguous_param_buffer'] = True
 
             # Make sure optimizer state is in FP32
             optim_dtype = torch.float32
@@ -493,7 +506,8 @@ class MegatronBaseModel(NLPModel):
             self._optimizer.init_params(reversed(no_overlap_params))
 
             # Initialize contiguous parameter buffer
-            self._optimizer.init_param_buffer()
+            if self._optimizer.contiguous_param_buffer:
+                self._optimizer.init_param_buffer()
 
         if self._scheduler is None:
             return self._optimizer
@@ -502,10 +516,20 @@ class MegatronBaseModel(NLPModel):
 
     def compute_consumed_samples(self, steps_since_resume=0):
         app_state = AppState()
-        consumed_samples = (
-            self.init_consumed_samples
-            + steps_since_resume * app_state.data_parallel_size * self.cfg.micro_batch_size * get_num_microbatches()
-        )
+
+        if self.cfg.get('rampup_batch_size', None):
+            from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+
+            current_global_batch_size = getattr(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, 'current_global_batch_size', 1)
+            consumed_samples = self.prev_consumed_samples + self.if_first_step * current_global_batch_size
+        else:
+            consumed_samples = (
+                self.init_consumed_samples
+                + steps_since_resume
+                * app_state.data_parallel_size
+                * self.cfg.micro_batch_size
+                * get_num_microbatches()
+            )
         return int(consumed_samples)
 
     def _extract_consumed_samples_from_ckpt(self, ckpt_path):

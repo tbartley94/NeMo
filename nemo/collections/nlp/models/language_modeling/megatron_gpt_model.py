@@ -14,14 +14,14 @@
 
 import itertools
 import queue
+import warnings
 from functools import partial
-from typing import Any, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 import numpy as np
 import torch
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.accelerators import CPUAccelerator
-from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
@@ -36,6 +36,7 @@ from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     get_all_params_for_weight_decay_optimization,
+    get_ltor_masks_and_position_ids,
     get_params_for_weight_decay_optimization,
 )
 from nemo.collections.nlp.modules.common.text_generation_utils import (
@@ -51,9 +52,10 @@ from nemo.collections.nlp.modules.common.transformer.text_generation import (
     SamplingParam,
     TextGeneration,
 )
-from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
+from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.neural_types import ChannelType, NeuralType
 from nemo.utils import logging
 
 try:
@@ -89,6 +91,99 @@ except (ImportError, ModuleNotFoundError):
     HAVE_TE = False
 
 
+class MegatronGPTExportableModel(torch.nn.Module, Exportable):
+    """
+    Megatron GPT Wrapper for ONNX export
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.fp8_enabled = model.cfg.get('fp8', False)
+        self.fp8_recipe = None
+        if self.fp8_enabled and HAVE_TE:
+            self.fp8_recipe = transformer_engine.common.recipe.DelayedScaling(
+                margin=0, interval=1, fp8_format=transformer_engine.common.recipe.Format.E4M3
+            )
+
+        self.dtype = None
+        if model.cfg['precision'] == 'bf16':
+            self.dtype = torch.bfloat16
+        elif int(model.cfg['precision']) == 32:
+            self.dtype = torch.float
+        elif int(model.cfg['precision']) == 16:
+            self.dtype = torch.float16
+        else:
+            raise ValueError(f"precision: {model.cfg['precision']} is not supported.")
+
+    def forward(self, tokens, position_ids, attention_mask):
+        if self.fp8_enabled and HAVE_TE:
+            with transformer_engine.pytorch.onnx_export(self.fp8_enabled), transformer_engine.pytorch.fp8_autocast(
+                enabled=self.fp8_enabled, fp8_recipe=self.fp8_recipe
+            ), torch.no_grad(), torch.inference_mode(), torch.autocast(
+                'cuda', dtype=self.dtype
+            ), warnings.catch_warnings():
+                warnings.filterwarnings(action='ignore', category=torch.jit.TracerWarning, module=r'.*')
+                assert tokens.shape == position_ids.shape
+                assert attention_mask.shape[2] == attention_mask.shape[3] == tokens.shape[1] == position_ids.shape[1]
+                output_tensor = self.model.forward(
+                    tokens=tokens.cuda(),
+                    text_position_ids=position_ids.cuda(),
+                    attention_mask=attention_mask.cuda(),
+                    labels=None,
+                )
+        else:
+            with torch.no_grad(), torch.inference_mode(), torch.autocast(
+                'cuda', dtype=self.dtype
+            ), warnings.catch_warnings():
+                warnings.filterwarnings(action='ignore', category=torch.jit.TracerWarning, module=r'.*')
+                assert tokens.shape == position_ids.shape
+                assert attention_mask.shape[2] == attention_mask.shape[3] == tokens.shape[1] == position_ids.shape[1]
+                output_tensor = self.model.forward(
+                    tokens=tokens.cuda(),
+                    text_position_ids=position_ids.cuda(),
+                    attention_mask=attention_mask.cuda(),
+                    labels=None,
+                )
+
+        return output_tensor
+
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def input_example(self, max_batch=1, max_dim=768, seq_len=6):
+        ids = [self.model.tokenizer.text_to_ids(text) for text in ["how is the weather on           Sunday"]]
+        id_tensors = [torch.unsqueeze(torch.LongTensor(id_list), dim=0) for id_list in ids]
+        masks_and_position_ids = [
+            get_ltor_masks_and_position_ids(id_tensor, self.model.tokenizer.eos_id, False, False, False)
+            for id_tensor in id_tensors
+        ]
+        for tokens, attn_mask_and_pos_ids in zip(id_tensors, masks_and_position_ids):
+            attn_mask, _, pos_ids = attn_mask_and_pos_ids
+            return tokens, pos_ids, attn_mask
+
+    @property
+    def input_types(self) -> Optional[Dict[str, NeuralType]]:
+        return {
+            "input_ids": NeuralType(('B', 'T'), ChannelType()),
+            "position_ids": NeuralType(('B', 'T'), ChannelType()),
+            "attention_mask": NeuralType(('D', 'D', 'T', 'T'), ChannelType()),
+        }
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        return {"logits": NeuralType(('B', 'T', 'D'), ChannelType())}
+
+    @property
+    def input_names(self) -> List[str]:
+        return ['input_ids', 'position_ids', 'attention_mask']
+
+    @property
+    def output_names(self) -> List[str]:
+        return ['logits']
+
+
 class MegatronGPTModel(MegatronBaseModel, TextGeneration):
     """
     Megatron GPT pretraining
@@ -111,6 +206,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self._validate_trainer()
 
         self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
+
+        self.rampup_batch_size = self.cfg.get('rampup_batch_size', None)
+        if self.rampup_batch_size:
+            self.prev_consumed_samples = 0
+            self.if_first_step = 0
+            self.prev_global_batch_size = None
 
         if not self.megatron_amp_o2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
             raise ValueError('Virtual pipeline model parallel is only supported when using megatron_amp_O2')
@@ -148,10 +249,20 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             if isinstance(self.model, list):
                 converted_model = []
                 for module in self.model:
-                    converted_model.append(Float16Module(module=module, precision=cfg.precision))
+                    converted_model.append(
+                        Float16Module(
+                            module=module,
+                            precision=cfg.precision,
+                            share_token_embeddings=self.cfg.get('share_embeddings_and_output_weights', True),
+                        )
+                    )
                 self.model = converted_model
             else:
-                self.model = Float16Module(module=self.model, precision=cfg.precision)
+                self.model = Float16Module(
+                    module=self.model,
+                    precision=cfg.precision,
+                    share_token_embeddings=self.cfg.get('share_embeddings_and_output_weights', True),
+                )
 
         if self.trainer.precision == 'bf16':
             self.autocast_dtype = torch.bfloat16
@@ -199,7 +310,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
     def model_provider_func(self, pre_process, post_process):
         """Model depends on pipeline paralellism."""
         model = GPTModel(
-            vocab_size=self.padded_vocab_size,
+            vocab_size=self.cfg.get('override_vocab_size', self.padded_vocab_size),
             hidden_size=self.cfg.hidden_size,
             max_position_embeddings=self.cfg.max_position_embeddings,
             num_layers=self.cfg.num_layers,
@@ -257,6 +368,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             reduce_amax=self.cfg.get('reduce_amax', True),
             use_emha=self.cfg.get('use_emha', False),
             ub_tp_comm_overlap=self.cfg.get('ub_tp_comm_overlap', False),
+            use_flash_attention=self.cfg.get('use_flash_attention', False),
+            megatron_legacy=self.cfg.get('megatron_legacy', False),
+            seq_len_interpolation_factor=self.cfg.get('seq_len_interpolation_factor', None),
         )
 
         return model
@@ -413,6 +527,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.cfg.get('hidden_size'),
         ]
         ub_cfg_file_name = self.cfg.get('ub_tp_comm_overlap_cfg', None)
+        ub_cfgs = None
         if ub_cfg_file_name is not None:
             try:
                 import yaml
@@ -420,9 +535,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 with open(ub_cfg_file_name, 'r') as ub_cfg_file:
                     ub_cfgs = yaml.safe_load(ub_cfg_file)
             except (ImportError, TypeError):
-                print("Fail to read ub_tp_comm_overlap config file.")
-        else:
-            ub_cfgs = None
+                logging.error(f"Fail to read ub_tp_comm_overlap config file: {ub_cfg_file_name}.")
         te_module.initialize_ub(
             shape=input_shape,
             tp_size=self.cfg.get('tensor_model_parallel_size'),
@@ -440,6 +553,13 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         # Initialize userbuffer communicators.
         if self.initialize_ub:
             self.initialize_ub_func()
+
+        if self.rampup_batch_size:
+            num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
+            current_global_batch_size = num_microbatch_calculator.current_global_batch_size
+            # do validation and save the checkpoint when gbs is changed
+            if self.prev_global_batch_size != current_global_batch_size and self.prev_global_batch_size:
+                self.trainer.should_stop = True
 
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
         self._optimizer.zero_grad()
@@ -513,16 +633,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'consumed_samples', consumed_samples, prog_bar=True, rank_zero_only=True, batch_size=1,
         )
 
-        if self.cfg.get('rampup_batch_size', None):
-            micro_batch_size = self.cfg.get('micro_batch_size', 1)
-            total_gpus_number = self.trainer.num_devices * self.trainer.num_nodes
-            current_global_batch_size = get_num_microbatches() * micro_batch_size * total_gpus_number
-            self.log('global_batch_size', current_global_batch_size, prog_bar=True, rank_zero_only=True, batch_size=1)
-
-            num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
+        if self.rampup_batch_size:
+            self.prev_global_batch_size = current_global_batch_size
+            self.prev_consumed_samples = consumed_samples
             num_microbatch_calculator.update(
-                consumed_samples=consumed_samples, consistency_check=True,
+                consumed_samples=consumed_samples, consistency_check=False,
             )
+            current_global_batch_size = num_microbatch_calculator.current_global_batch_size
+            self.log('global_batch_size', current_global_batch_size, prog_bar=True, rank_zero_only=True, batch_size=1)
+            self.if_first_step = 1
 
         return loss_mean
 
@@ -686,7 +805,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             if self.get_attention_mask_from_fusion:
                 required_keys.remove('attention_mask')
             batch = {key: val.cuda(non_blocking=True) if key in required_keys else None for key, val in batch.items()}
-
             # Model forward pass
             output_tensor = model(
                 batch['tokens'],
@@ -743,9 +861,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     inference_max_sequence_len,
                 ) = batch
                 tokens = tokens.cuda()
-                attention_mask = attention_mask.cuda()
                 position_ids = position_ids.cuda()
-                attention_mask = attention_mask[0:1]
+                if attention_mask is not None:
+                    attention_mask = attention_mask.cuda()
+                    attention_mask = attention_mask[0:1]
                 extra_arg['set_inference_key_value_memory'] = set_inference_key_value_memory[0].item()
                 extra_arg['inference_max_sequence_len'] = inference_max_sequence_len[0].item()
             output_tensor = model(tokens, position_ids, attention_mask, **extra_arg)
@@ -873,6 +992,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
                     drop_last=drop_last,
                     global_batch_size=self.cfg.global_batch_size,
+                    rampup_batch_size=self.cfg.get('rampup_batch_size', None),
                     pad_samples_to_global_batch_size=pad_samples_to_global_batch_size,
                 )
             elif self.cfg.data.dataloader_type == 'cyclic':
@@ -923,28 +1043,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.init_consumed_samples = init_consumed_samples
         self.init_global_step = self.trainer.global_step
 
-        rampup_batch_size = self.cfg.get('rampup_batch_size', None)
-        if rampup_batch_size:
-            start_batch_size = rampup_batch_size[0]
-            batch_size_increment = rampup_batch_size[1]
-            total_gpus_number = self.trainer.num_devices * self.trainer.num_nodes
+        if self.rampup_batch_size:
+            optimizer = self.cfg.optim.get('name', None)
+            assert (
+                optimizer == 'fused_adam'
+            ), f'{optimizer} optimizer is not supported yet with rampup batch size. Please, use fused_adam optimizer instead.'
 
-            assert start_batch_size % (total_gpus_number) == 0, (
-                'expected'
-                ' start batch size ({}) to be divisible by total number of GPUs'
-                ' ({})'.format(start_batch_size, total_gpus_number)
-            )
-
-            micro_batch_size = self.cfg.get('micro_batch_size', 1)
-            tensor_model_parallel_size = self.cfg.get('tensor_model_parallel_size', 1)
-            pipeline_model_parallel_size = self.cfg.get('pipeline_model_parallel_size', 1)
-            total_data_parallel_size = total_gpus_number // (tensor_model_parallel_size * pipeline_model_parallel_size)
-
-            assert batch_size_increment % (micro_batch_size * total_data_parallel_size) == 0, (
-                'expected'
-                ' batch size increment ({}) to be divisible by micro_batch_size ({}) times total data parallel size'
-                ' ({})'.format(batch_size_increment, micro_batch_size, total_data_parallel_size)
-            )
+            num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
+            num_microbatch_calculator.update(self.init_consumed_samples, consistency_check=False)
+            self.prev_consumed_samples = self.init_consumed_samples
 
         if stage == 'predict':
             return
@@ -1049,7 +1156,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             inference_config = inference_config.copy()
             compute_logprob = inference_config['compute_logprob']
             if compute_logprob:
-                del inference_config['compute_logprob']
                 inference_config['inputs'] = batch
                 inference_config['tokens_to_generate'] = 1
                 inference_config['all_probs'] = True
@@ -1059,7 +1165,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 compute_prob_response = get_computeprob_response(self.tokenizer, response, batch)
                 return compute_prob_response
             else:
-                del inference_config['compute_logprob']
                 inference_config['inputs'] = batch
                 return generate(self, **inference_config)
 
@@ -1149,6 +1254,13 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             return itertools.chain.from_iterable(module.parameters() for module in self.model)
         else:
             return self.model.parameters()
+
+    @property
+    def mgpt_wrapper(self):
+        return MegatronGPTExportableModel(self)
+
+    def list_export_subnets(self):
+        return ['mgpt_wrapper']
 
     def _reset_activation_checkpointing_args(self):
         """ Disables activation checkpointing completely and saves the values so that

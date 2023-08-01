@@ -19,14 +19,14 @@ from math import isclose
 from typing import Any, List, Optional, Union
 
 import torch
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.listconfig import ListConfig
 from pytorch_lightning.callbacks import BasePredictionWriter
 from torch.utils.data import ChainDataset
 
 from nemo.collections.asr.data import audio_to_text, audio_to_text_dali
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
-from nemo.collections.common.data.dataset import ConcatDataset
+from nemo.collections.common.data.dataset import CodeSwitchedDataset, ConcatDataset
 from nemo.utils import logging
 
 
@@ -659,8 +659,35 @@ def get_audio_to_text_char_dataset_from_config(
         )
         return dataset
 
+    # Instantiate a code-switched dataset if config is present
+    if config.get('is_code_switched', False):
+        if 'manifest_filepath' in config and config['manifest_filepath'] is None:
+            logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
+            return None
+        if not ('code_switched' in config and config['code_switched'] is not None):
+            logging.warning(
+                f"Code switched dataset requires `*_ds.code_switched.*` dict but it was not provided. Config: {config}"
+            )
+            return None
+        if (
+            ('probs' in config['code_switched'])
+            and (config['code_switched']['probs'] is not None)
+            and (not isclose(sum(config['code_switched']['probs']), 1, abs_tol=1e-6))
+        ):
+            logging.warning(f"`.code_switched.probs` need to sum to 1. Config: {config['code_switched']}")
+            return None
+
+        shuffle_n = config.get('shuffle_n', 4 * config['batch_size']) if shuffle else 0
+        dataset = get_code_switched_dataset(
+            config=config,
+            shuffle_n=shuffle_n,
+            global_rank=global_rank,
+            world_size=world_size,
+            tokenizer=None,
+            augmentor=augmentor,
+        )
     # Instantiate tarred dataset loader or normal dataset loader
-    if config.get('is_tarred', False):
+    elif config.get('is_tarred', False):
         if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
             'manifest_filepath' in config and config['manifest_filepath'] is None
         ):
@@ -758,8 +785,35 @@ def get_audio_to_text_bpe_dataset_from_config(
         )
         return dataset
 
+    # Instantiate a code-switched dataset if config is present
+    if config.get('is_code_switched', False):
+        if 'manifest_filepath' in config and config['manifest_filepath'] is None:
+            logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
+            return None
+        if not ('code_switched' in config and config['code_switched'] is not None):
+            logging.warning(
+                f"Code switched dataset requires `*_ds.code_switched.*` dict but it was not provided. Config: {config}"
+            )
+            return None
+        if (
+            ('probs' in config['code_switched'])
+            and (config['code_switched']['probs'] is not None)
+            and (not isclose(sum(config['code_switched']['probs']), 1, abs_tol=1e-6))
+        ):
+            logging.warning(f"`.code_switched.probs` need to sum to 1. Config: {config['code_switched']}")
+            return None
+
+        shuffle_n = config.get('shuffle_n', 4 * config['batch_size']) if shuffle else 0
+        dataset = get_code_switched_dataset(
+            config=config,
+            shuffle_n=shuffle_n,
+            global_rank=global_rank,
+            world_size=world_size,
+            tokenizer=tokenizer,
+            augmentor=augmentor,
+        )
     # Instantiate tarred dataset loader or normal dataset loader
-    if config.get('is_tarred', False):
+    elif config.get('is_tarred', False):
         if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
             'manifest_filepath' in config and config['manifest_filepath'] is None
         ):
@@ -826,6 +880,7 @@ class ASRPredictionWriter(BasePredictionWriter):
             item = {}
             sample = self.dataset.get_manifest_sample(sample_id)
             item["audio_filepath"] = sample.audio_file
+            item["offset"] = sample.offset
             item["duration"] = sample.duration
             item["text"] = sample.text_raw
             item["pred_text"] = transcribed_text
