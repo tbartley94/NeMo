@@ -84,7 +84,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             self._cfg.preprocessor.init_from_encodec = None  # To stop from reloading every training.
 
         codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 for _ in range(self.n_codebooks)])
-        self.register_buffer("codebook_weights", torch.tensor(codebook_weights, requires_grad=False))
+        self.register_buffer("codebook_weights", torch.tensor(codebook_weights, requires_grad=False, dtype=torch.float32))
 
         self.decode_mode = self._cfg.model_defaults.get("decode_mode", "base")
         if self.decode_mode == "base":
@@ -256,5 +256,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                     decoder_outputs=nn.functional.log_softmax(logits, -1),
                     targets= spectrograms[:,idx,:] - self.codebook_size*idx,  # We only calculate loss in relation to codebook
                 )
-                loss_value[idx] = self.codebook_weights[idx] * curr_loss
-        return loss_value[loss_value != 0].mean(), loss_val_dict  # nonzero loss values only
+                loss_value[idx] = curr_loss
+        loss_value = nn.functional.normalize(loss_value, dim=0) 
+        return torch.dot(loss_value, self.codebook_weights), loss_val_dict  # nonzero loss values only
