@@ -257,5 +257,4 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                     targets= spectrograms[:,idx,:] - self.codebook_size*idx,  # We only calculate loss in relation to codebook
                 )
                 loss_value[idx] = curr_loss
-        loss_value = nn.functional.normalize(loss_value, dim=0) 
         return torch.dot(loss_value, self.codebook_weights), loss_val_dict  # nonzero loss values only
