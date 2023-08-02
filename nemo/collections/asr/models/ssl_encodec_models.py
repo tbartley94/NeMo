@@ -246,11 +246,11 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         loss_value = encoded.new_zeros(self.n_codebooks)
         
         decoded = self.decoder_ssl(encoder_output=encoded)
+        decoded_q = decoded.view(decoded.shape[0], decoded.shape[1], self.n_codebooks, self.output_dim)
         # -> BxTxD
         for idx in range(self.n_codebooks):
             if torch.any(spec_masks[:,idx,:]):
-                decoded_q = decoded[:,:,idx*self.output_dim:(idx+1)*self.output_dim]
-                logits = self.heads[idx](decoded_q)
+                logits = self.heads[idx](decoded_q[:,:,idx,:])
                 curr_loss = self.loss(
                     spec_masks=spec_masks[:,idx,:].unsqueeze(dim=1),
                     decoder_outputs=nn.functional.log_softmax(logits, -1),
