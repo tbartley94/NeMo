@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+import numpy
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -717,7 +718,7 @@ class MaskedPatchAugmentation(NeuralModule):
 
 class CodePatchAugmentation(NeuralModule):
     def __init__(
-        self, patch_size: int = 48, mask_patches: float = 10.0, mask_value: int = 0, n_codes: int = 8, n_targets: int = 1, target_codes: list = [], exclude_codes: list = []
+        self, patch_size: int = 48, mask_patches: float = 10.0, mask_value: int = 0, n_codes: int = 8, n_targets: int = 1, target_codes: list = [], exclude_codes: list = [], schedule: bool = None, p_min: float = 0.1, p_max: float = 1.0
     ):
         super().__init__()
         self.n_targets = n_targets
@@ -726,7 +727,14 @@ class CodePatchAugmentation(NeuralModule):
 
         self.patch_size = patch_size
         self.mask_value = mask_value
-        if mask_patches >= 1:
+
+        self.schedule = schedule
+        if schedule is not None:
+            self.min = p_min
+            self.max = p_max
+            self.mask_patches = None 
+            self._mask_fraction = None
+        elif mask_patches >= 1:
             self.mask_patches = int(mask_patches)
         elif mask_patches >= 0:
             self._mask_fraction = mask_patches
@@ -738,6 +746,9 @@ class CodePatchAugmentation(NeuralModule):
     def forward(self, input_spec, length):
         augmented_spec = input_spec
         min_len = torch.min(length)
+        if self.schedule is not None:
+            self._mask_fraction = random.uniform(self.min, self.max)
+
         if self.mask_patches is None:
             # masking specified as fraction
             len_fraction = int(min_len * self._mask_fraction)
@@ -747,7 +758,7 @@ class CodePatchAugmentation(NeuralModule):
 
         if min_len < self.patch_size * mask_patches:
             mask_patches = min_len // self.patch_size
-        
+
         for idx in range(input_spec.shape[0]):
             cur_len = length[idx]
             patches = range(cur_len // self.patch_size)
