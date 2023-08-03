@@ -48,6 +48,7 @@ class Quantizer(NeuralModule):
         self.n = n
 
     def forward(self, x):
+        print(self.weight.requires_grad)
         embed = self.weight[self.q*self.n:(self.q+1)*self.n].t()
         dist = torch.stack([-(
             x[idx].pow(2).sum(1, keepdim=True)
@@ -66,6 +67,7 @@ class EmbProj(NeuralModule):
         nn.init.uniform_(self.bias)
 
     def forward(self, x):
+        print(self.weight.requires_grad)
         embed = self.weight[self.q*self.n:(self.q+1)*self.n]
         return torch.matmul(x, embed.t()) + self.bias
 
@@ -246,10 +248,12 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         loss_value = encoded.new_zeros(self.n_codebooks)
         
         decoded = self.decoder_ssl(encoder_output=encoded)
+        # -> BxTxD*N
         decoded_q = decoded.view(decoded.shape[0], decoded.shape[1], self.n_codebooks, self.output_dim)
-        # -> BxTxD
+        # -> BxTxNxD
         for idx in range(self.n_codebooks):
             if torch.any(spec_masks[:,idx,:]):
+                print(torch.equal(self.heads[idx].weight[idx*self.output_dim:(idx+1)*self.output_dim], self.preprocessor.embedding.weight[idx*self.output_dim:(idx+1)*self.output_dim]))
                 logits = self.heads[idx](decoded_q[:,:,idx,:])
                 curr_loss = self.loss(
                     spec_masks=spec_masks[:,idx,:].unsqueeze(dim=1),
@@ -259,6 +263,45 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                 loss_val_dict[f"head_{idx}"] = curr_loss
                 loss_value[idx] = curr_loss
         return torch.dot(loss_value, self.codebook_weights), loss_val_dict  # nonzero loss values only
+
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        # Set flag to register tensors
+        self._in_validation_step = True
+
+        signal, signal_len, targets, target_lengths = batch
+        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+            spectrograms, spec_masks, encoded, encoded_len = self.forward(
+                processed_signal=signal, processed_signal_length=signal_len,
+            )
+        else:
+            spectrograms, spec_masks, encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len,
+            )
+
+        if self.decoder_losses is not None:
+            for dec_loss_name, dec_loss in self.decoder_losses.items():
+                self.decoder_losses_active[dec_loss_name] = self.trainer.global_step >= self.start_step[dec_loss_name]
+
+        loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
+
+        tensorboard_logs = {
+            'val_loss': loss_value,
+        }
+
+        for loss_name, loss_val in loss_val_dict.items():
+            tensorboard_logs[loss_name] = loss_val
+
+        if self.feat_pen:
+            loss_value += self.feat_pen
+
+        # reset access registry
+        self.reset_registry()
+        del self._in_validation_step
+
+        return {
+            'val_loss': loss_value,
+            'log': tensorboard_logs
+        }
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
         val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
