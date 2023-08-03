@@ -772,10 +772,10 @@ class CodePatchAugmentation(NeuralModule):
 
 
 class CodeTimePatchAugmentation(CodePatchAugmentation):
-    def __init__(self, *args, time_mask: float = 0.1, **kwargs):
+    def __init__(self, *args, alt_mask: float = 0.1, **kwargs):
         super().__init__(*args, **kwargs)
         assert self.schedule is not None or self._mask_fraction > 0  # need a fraction
-        self.time_fraction = time_mask
+        self._alt_fraction = alt_mask
 
     @typecheck()
     def forward(self, input_spec, length):
@@ -799,7 +799,7 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
                 masked_patches = random.sample(patches, mask_patches)
                 for mp in masked_patches:
                     p = random.random()
-                    if p > self.time_fraction:
+                    if p > self._alt_fraction:
                         # Regular masking
                         augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value # padding value
                     else:
