@@ -63,6 +63,7 @@ __all__ = [
     'SpectrogramAugmentation',
     'MaskedPatchAugmentation',
     'CodePatchAugmentation',
+    'CodeTimePatchAugmentation',
     'CropOrPadSpectrogramAugmentation',
 ]
 
@@ -767,6 +768,44 @@ class CodePatchAugmentation(NeuralModule):
                 masked_patches = random.sample(patches, mask_patches)
                 for mp in masked_patches:
                     augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value # padding value
+        return augmented_spec
+
+
+class CodeTimePatchAugmentation(CodePatchAugmentation):
+    def __init__(self, *args, time_mask: float = 0.1, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.schedule is not None or self._mask_fraction > 0  # need a fraction
+        self.time_fraction = time_mask
+
+    @typecheck()
+    def forward(self, input_spec, length):
+        augmented_spec = input_spec.clone()
+        min_len = torch.min(length)
+        if self.schedule is not None:
+            self._mask_fraction = random.uniform(self.min, self.max)
+
+        # assume fractional masking
+        len_fraction = int(min_len * self._mask_fraction)
+        mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
+
+        if min_len < self.patch_size * mask_patches:
+            mask_patches = min_len // self.patch_size
+
+        for idx in range(input_spec.shape[0]):
+            cur_len = length[idx]
+            patches = range(cur_len // self.patch_size)
+            codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
+            for q in codes:
+                masked_patches = random.sample(patches, mask_patches)
+                for mp in masked_patches:
+                    p = random.random()
+                    if p > self.time_fraction:
+                        # Regular masking
+                        augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value # padding value
+                    else:
+                        # Choose random start idx
+                        sp = random.randrange(0, cur_len // self.patch_size)
+                        augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = input_spec[idx, q, sp * self.patch_size : (sp + 1) * self.patch_size] # slicing
         return augmented_spec
 
 
