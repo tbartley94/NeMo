@@ -259,3 +259,11 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
                 loss_val_dict[f"head_{idx}"] = curr_loss
                 loss_value[idx] = curr_loss
         return torch.dot(loss_value, self.codebook_weights), loss_val_dict  # nonzero loss values only
+
+    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
+        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+        tensorboard_logs = {'val_loss': val_loss_mean}
+        log_keys = [f"head_{n}" for n in range(self.n_codebooks)]
+        for key in log_keys:
+            tensorboard_logs[key] = torch.stack([x['log'][key] for x in outputs if key in x['log'] ]).mean()
+        return {'val_loss': val_loss_mean, 'log': tensorboard_logs}
