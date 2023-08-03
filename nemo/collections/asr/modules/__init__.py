@@ -21,6 +21,7 @@ from nemo.collections.asr.modules.audio_preprocessing import (
     CropOrPadSpectrogramAugmentation,
     MaskedPatchAugmentation,
     CodePatchAugmentation,
+    CodeTimePatchAugmentation,
     SpectrogramAugmentation,
     SpectrogramToAudio,
 )
