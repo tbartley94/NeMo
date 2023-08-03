@@ -269,18 +269,10 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         self._in_validation_step = True
 
         signal, signal_len, targets, target_lengths = batch
-        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
-            spectrograms, spec_masks, encoded, encoded_len = self.forward(
-                processed_signal=signal, processed_signal_length=signal_len,
-            )
-        else:
-            spectrograms, spec_masks, encoded, encoded_len = self.forward(
-                input_signal=signal, input_signal_length=signal_len,
-            )
 
-        if self.decoder_losses is not None:
-            for dec_loss_name, dec_loss in self.decoder_losses.items():
-                self.decoder_losses_active[dec_loss_name] = self.trainer.global_step >= self.start_step[dec_loss_name]
+        spectrograms, spec_masks, encoded, encoded_len = self.forward(
+            input_signal=signal, input_signal_length=signal_len,
+        )
 
         loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
 
