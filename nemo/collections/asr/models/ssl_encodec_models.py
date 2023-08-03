@@ -48,7 +48,6 @@ class Quantizer(NeuralModule):
         self.n = n
 
     def forward(self, x):
-        print(self.weight.requires_grad)
         embed = self.weight[self.q*self.n:(self.q+1)*self.n].t()
         dist = torch.stack([-(
             x[idx].pow(2).sum(1, keepdim=True)
@@ -67,7 +66,6 @@ class EmbProj(NeuralModule):
         nn.init.uniform_(self.bias)
 
     def forward(self, x):
-        print(self.weight.requires_grad)
         embed = self.weight[self.q*self.n:(self.q+1)*self.n]
         return torch.matmul(x, embed.t()) + self.bias
 
@@ -92,7 +90,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         if self.decode_mode == "base":
             self.heads = nn.ModuleList(nn.Linear(self.output_dim, self.codebook_size) for _ in range(self.n_codebooks)) # Just a dummy value so decoder looks nice
         else:
-            codebooks = self.preprocessor.embedding.weight #[self.preprocessor.embedding.weight[idx*self.codebook_size:(idx+1)*self.codebook_size] for idx in range(self.n_codebooks)]
+            codebooks = self.preprocessor.embedding.weight
             if self.decode_mode == "quantize":
                 self.heads = nn.ModuleList(Quantizer(codebooks, q, self.codebook_size) for q in range(self.n_codebooks))
             elif self.decode_mode == "embed":
@@ -253,7 +251,6 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         # -> BxTxNxD
         for idx in range(self.n_codebooks):
             if torch.any(spec_masks[:,idx,:]):
-                print(torch.equal(self.heads[idx].weight[idx*self.output_dim:(idx+1)*self.output_dim], self.preprocessor.embedding.weight[idx*self.output_dim:(idx+1)*self.output_dim]))
                 logits = self.heads[idx](decoded_q[:,:,idx,:])
                 curr_loss = self.loss(
                     spec_masks=spec_masks[:,idx,:].unsqueeze(dim=1),
@@ -267,25 +264,18 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         # Set flag to register tensors
         self._in_validation_step = True
-
         signal, signal_len, targets, target_lengths = batch
-
         spectrograms, spec_masks, encoded, encoded_len = self.forward(
             input_signal=signal, input_signal_length=signal_len,
         )
-
         loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
-
         tensorboard_logs = {
             'val_loss': loss_value,
         }
-
         for loss_name, loss_val in loss_val_dict.items():
             tensorboard_logs[loss_name] = loss_val
-
         if self.feat_pen:
             loss_value += self.feat_pen
-
         # reset access registry
         self.reset_registry()
         del self._in_validation_step
