@@ -772,10 +772,10 @@ class CodePatchAugmentation(NeuralModule):
 
 
 class CodeTimePatchAugmentation(CodePatchAugmentation):
-    def __init__(self, *args, alt_mask: float = 0.1, **kwargs):
+    def __init__(self, *args, alt_patches: float = 0.1, **kwargs):
         super().__init__(*args, **kwargs)
         assert self.schedule is not None or self._mask_fraction > 0  # need a fraction
-        self._alt_fraction = alt_mask
+        self._alt_fraction = alt_patches
 
     @typecheck()
     def forward(self, input_spec, length):
