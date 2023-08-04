@@ -770,11 +770,11 @@ class CodePatchAugmentation(NeuralModule):
     def _get_mask_idxs(self, len, n):
         # More efficient to use range for sampling
         n_patches = range(len // self.patch_size)
-        samples = torch.tensor(random.sample(n_patches, n))
+        starts = torch.tensor([sample*self.patch_size for sample in random.sample(n_patches, n)])
         # Trick from spkr implementation. See: https://github.com/s3prl/s3prl/blob/main/s3prl/pretrain/mockingjay/task.py#L96
-        starts = samples.expand(self.patch_size, n).transpose(0,1)
+        intervals = starts.expand(self.patch_size, n).transpose(0,1)
         offsets = torch.arange(self.patch_size)
-        patch_idxs = starts + offsets
+        patch_idxs = intervals + offsets
         return patch_idxs.view(-1)
 
 
@@ -803,7 +803,7 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
             codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
             for q in codes:
                 mask_idxs = self._get_mask_idxs(cur_len, mask_patches)
-                p = random.random()
+                print(torch.sort(mask_idxs, dim=0)[0])
                 if alt_mask:
                     # Sampling
                     sample_idxs = self._get_mask_idxs(cur_len, mask_patches)
