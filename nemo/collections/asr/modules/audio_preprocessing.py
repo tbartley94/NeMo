@@ -799,7 +799,7 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
 
         for idx in range(input_spec.shape[0]):
             cur_len = length[idx]
-            alt_mask = p < self._p_samp # determines if batch uses time sampling or masking
+            alt_mask = random.random() < self._p_samp # determines if batch uses time sampling or masking
             codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
             for q in codes:
                 mask_idxs = self._get_mask_idxs(cur_len, mask_patches)
