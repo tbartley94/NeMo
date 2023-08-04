@@ -761,51 +761,56 @@ class CodePatchAugmentation(NeuralModule):
             mask_patches = min_len // self.patch_size
 
         for idx in range(input_spec.shape[0]):
-            cur_len = length[idx]
-            patches = range(cur_len // self.patch_size)
             codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
             for q in codes:
-                masked_patches = random.sample(patches, mask_patches)
-                for mp in masked_patches:
-                    augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value # padding value
+                mask_idxs = self._get_mask_idxs(length[idx], mask_patches)
+                augmented_spec[idx, q, mask_idxs] = self.mask_value # padding value
         return augmented_spec
+    
+    def _get_mask_idxs(self, len, n):
+        # More efficient to use range for sampling
+        n_patches = range(len // self.patch_size)
+        samples = torch.tensor(random.sample(n_patches, n))
+        # Trick from spkr implementation. See: https://github.com/s3prl/s3prl/blob/main/s3prl/pretrain/mockingjay/task.py#L96
+        starts = samples.expand(self.patch_size, n).transpose(0,1)
+        offsets = torch.arange(self.patch_size)
+        patch_idxs = starts + offsets
+        return patch_idxs.view(-1)
 
 
 class CodeTimePatchAugmentation(CodePatchAugmentation):
-    def __init__(self, *args, alt_patches: float = 0.1, **kwargs):
+    def __init__(self, *args, p_samp: float = 0.1, **kwargs):
         super().__init__(*args, **kwargs)
         assert self.schedule is not None or self._mask_fraction > 0  # need a fraction
-        self._alt_fraction = alt_patches
+        self._p_samp = p_samp
 
     @typecheck()
     def forward(self, input_spec, length):
-        augmented_spec = input_spec.clone()
+        augmented_spec = input_spec
         min_len = torch.min(length)
         if self.schedule is not None:
             self._mask_fraction = random.uniform(self.min, self.max)
-
         # assume fractional masking
         len_fraction = int(min_len * self._mask_fraction)
         mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
-
+        # Adjusts number of mask_patches if size will overlap min_len. (Need same size for MLM)
         if min_len < self.patch_size * mask_patches:
             mask_patches = min_len // self.patch_size
 
         for idx in range(input_spec.shape[0]):
             cur_len = length[idx]
-            patches = range(cur_len // self.patch_size)
+            alt_mask = p < self._p_samp # determines if batch uses time sampling or masking
             codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
             for q in codes:
-                masked_patches = random.sample(patches, mask_patches)
-                for mp in masked_patches:
-                    p = random.random()
-                    if p > self._alt_fraction:
-                        # Regular masking
-                        augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value # padding value
-                    else:
-                        # Choose random start idx
-                        sp = random.randrange(0, cur_len // self.patch_size)
-                        augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = input_spec[idx, q, sp * self.patch_size : (sp + 1) * self.patch_size] # slicing
+                mask_idxs = self._get_mask_idxs(cur_len, mask_patches)
+                p = random.random()
+                if alt_mask:
+                    # Sampling
+                    sample_idxs = self._get_mask_idxs(cur_len, mask_patches)
+                    augmented_spec[idx, q, mask_idxs] = input_spec[idx, q, sample_idxs]
+                else:
+                    # Reg masking
+                    augmented_spec[idx, q, mask_idxs] = self.mask_value # padding value
         return augmented_spec
 
 
