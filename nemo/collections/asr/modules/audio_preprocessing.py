@@ -747,9 +747,9 @@ class CodePatchAugmentation(NeuralModule):
     def forward(self, input_spec, length):
         augmented_spec = input_spec
         min_len = torch.min(length)
+
         if self.schedule is not None:
             self._mask_fraction = random.uniform(self.min, self.max)
-
         if self.mask_patches is None:
             # masking specified as fraction
             len_fraction = int(min_len * self._mask_fraction)
@@ -761,21 +761,14 @@ class CodePatchAugmentation(NeuralModule):
             mask_patches = min_len // self.patch_size
 
         for idx in range(input_spec.shape[0]):
+            cur_len = length[idx]
             codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
             for q in codes:
-                mask_idxs = self._get_mask_idxs(length[idx], mask_patches)
-                augmented_spec[idx, q, mask_idxs] = self.mask_value # padding value
+                patches = range(cur_len // self.patch_size)
+                masked_patches = random.sample(patches, mask_patches)
+                for mp in masked_patches:
+                    augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
         return augmented_spec
-    
-    def _get_mask_idxs(self, len, n):
-        # More efficient to use range for sampling
-        n_patches = range(len // self.patch_size)
-        starts = torch.tensor([sample*self.patch_size for sample in random.sample(n_patches, n)])
-        # Trick from spkr implementation. See: https://github.com/s3prl/s3prl/blob/main/s3prl/pretrain/mockingjay/task.py#L96
-        intervals = starts.expand(self.patch_size, n).transpose(0,1)
-        offsets = torch.arange(self.patch_size)
-        patch_idxs = intervals + offsets
-        return patch_idxs.view(-1)
 
 
 class CodeTimePatchAugmentation(CodePatchAugmentation):
@@ -788,6 +781,7 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
     def forward(self, input_spec, length):
         augmented_spec = input_spec
         min_len = torch.min(length)
+        
         if self.schedule is not None:
             self._mask_fraction = random.uniform(self.min, self.max)
         # assume fractional masking
@@ -811,6 +805,16 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
                     # Reg masking
                     augmented_spec[idx, q, mask_idxs] = self.mask_value # padding value
         return augmented_spec
+    
+    def _get_mask_idxs(self, len, n):
+        # More efficient to use range for sampling
+        n_patches = range(len // self.patch_size)
+        starts = torch.tensor([sample*self.patch_size for sample in random.sample(n_patches, n)])
+        # Trick from spkr implementation. See: https://github.com/s3prl/s3prl/blob/main/s3prl/pretrain/mockingjay/task.py#L96
+        intervals = starts.expand(self.patch_size, n).transpose(0,1)
+        offsets = torch.arange(self.patch_size)
+        patch_idxs = intervals + offsets
+        return patch_idxs.view(-1)
 
 
 class CropOrPadSpectrogramAugmentation(NeuralModule):
