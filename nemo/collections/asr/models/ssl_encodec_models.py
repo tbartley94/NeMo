@@ -290,5 +290,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         tensorboard_logs = {'val_loss': val_loss_mean}
         log_keys = [f"head_{n}" for n in range(self.n_codebooks)]
         for key in log_keys:
-            tensorboard_logs[key] = torch.stack([x['log'][key] for x in outputs if key in x['log'] ]).mean()
+            head = [x['log'][key] for x in outputs if key in x['log']]
+            if head:
+                tensorboard_logs[key] = torch.stack(head).mean()
         return {'val_loss': val_loss_mean, 'log': tensorboard_logs}

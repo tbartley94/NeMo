@@ -803,7 +803,6 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
             codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
             for q in codes:
                 mask_idxs = self._get_mask_idxs(cur_len, mask_patches)
-                print(torch.sort(mask_idxs, dim=0)[0])
                 if alt_mask:
                     # Sampling
                     sample_idxs = self._get_mask_idxs(cur_len, mask_patches)
