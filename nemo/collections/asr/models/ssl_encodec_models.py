@@ -286,11 +286,12 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         }
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
-        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+        # Have alternate logging due to potentially inconsistent outputs.
+        val_loss_mean = torch.stack([o['val_loss'] for o in outputs]).mean()
         tensorboard_logs = {'val_loss': val_loss_mean}
-        log_keys = [f"head_{n}" for n in range(self.n_codebooks)]
-        for key in log_keys:
-            head = [x['log'][key] for x in outputs if key in x['log']]
-            if head:
-                tensorboard_logs[key] = torch.stack(head).mean()
+        for n in range(self.n_codebooks):
+            head = f"head_{n}"
+            head_loss = [o['log'][head] for o in outputs if head in o['log']]
+            if head_loss:
+                tensorboard_logs[head] = torch.stack(head_loss).mean()
         return {'val_loss': val_loss_mean, 'log': tensorboard_logs}
