@@ -76,34 +76,19 @@ class BERTQAModel(BaseQAModel):
             'start_logits': start_logits,
             'end_logits': end_logits,
         }
-        loss = {f'{prefix}_loss': loss, f'{prefix}_tensors': tensors}
-        if prefix == "val":
-            self.validation_step_outputs.append(loss)
-        else:
-            self.test_step_outputs.append(loss)
-
-        return loss
+        return {f'{prefix}_loss': loss, f'{prefix}_tensors': tensors}
 
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
-    def on_validation_epoch_end(self):
+    def validation_epoch_end(self, outputs):
         prefix = "test" if self.trainer.testing else "val"
 
-        if prefix == 'val':
-            avg_loss = torch.stack([x[f'{prefix}_loss'] for x in self.validation_step_outputs]).mean()
+        avg_loss = torch.stack([x[f'{prefix}_loss'] for x in outputs]).mean()
 
-            unique_ids = torch.cat([x[f'{prefix}_tensors']['unique_ids'] for x in self.validation_step_outputs])
-            start_logits = torch.cat([x[f'{prefix}_tensors']['start_logits'] for x in self.validation_step_outputs])
-            end_logits = torch.cat([x[f'{prefix}_tensors']['end_logits'] for x in self.validation_step_outputs])
-            self.validation_step_outputs.clear()  # free memory
-        else:
-            avg_loss = torch.stack([x[f'{prefix}_loss'] for x in self.test_step_outputs]).mean()
-
-            unique_ids = torch.cat([x[f'{prefix}_tensors']['unique_ids'] for x in self.test_step_outputs])
-            start_logits = torch.cat([x[f'{prefix}_tensors']['start_logits'] for x in self.test_step_outputs])
-            end_logits = torch.cat([x[f'{prefix}_tensors']['end_logits'] for x in self.test_step_outputs])
-            self.test_step_outputs.clear()  # free memory
+        unique_ids = torch.cat([x[f'{prefix}_tensors']['unique_ids'] for x in outputs])
+        start_logits = torch.cat([x[f'{prefix}_tensors']['start_logits'] for x in outputs])
+        end_logits = torch.cat([x[f'{prefix}_tensors']['end_logits'] for x in outputs])
 
         all_unique_ids = []
         all_start_logits = []
@@ -155,8 +140,8 @@ class BERTQAModel(BaseQAModel):
             logging.info(f"{prefix} {eval_key}: {eval_results[eval_key]}")
             self.log(f"{prefix}_{eval_key}", eval_results[eval_key])
 
-    def on_test_epoch_end(self):
-        return self.on_validation_epoch_end()
+    def test_epoch_end(self, outputs):
+        return self.validation_epoch_end(outputs)
 
     @typecheck()
     def forward(self, input_ids, attention_mask, token_type_ids):

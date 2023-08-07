@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 import torch.nn.functional as F
 from omegaconf.dictconfig import DictConfig
+from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron import dataset_utils
@@ -89,14 +90,14 @@ class MegatronBertModel(MegatronBaseModel):
 
         self._validate_trainer()
 
-        if self.trainer.precision in ['bf16', 'bf16-mixed']:
+        if self.trainer.precision == 'bf16':
             self.autocast_dtype = torch.bfloat16
-        elif self.trainer.precision in [32, '32', '32-true']:
+        elif int(self.trainer.precision) == 32:
             self.autocast_dtype = torch.float
-        elif self.trainer.precision in [16, '16', '16-mixed']:
+        elif int(self.trainer.precision) == 16:
             self.autocast_dtype = torch.half
         else:
-            raise ValueError('precision must be in ["32-true", "16-mixed", "bf16-mixed"]')
+            raise ValueError('precision must be in [32, 16, "bf16"]')
 
         self.enable_autocast = (
             True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
@@ -421,11 +422,7 @@ class MegatronBertModel(MegatronBaseModel):
                 torch.distributed.all_reduce(grad, group=parallel_state.get_embedding_group())
 
     def validation_step(self, dataloader_iter, batch_idx):
-        # Prefetch the dataloader_iter before fwd_bwd func to avoid PP rank 2 from waiting indefinitely when PP rank 1 reaches the end of dataloader_iter
-        dataloader_iter, done = self._prefetch(dataloader_iter)
-        if done:
-            return
-        prefix = "test" if self.trainer.testing else "val"
+
         if self.cfg.data.dataloader_type == "LDDL":
             seq_length = dataloader_iter.iterator.get_seqlen()
             tensor_shape = [seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
@@ -453,26 +450,23 @@ class MegatronBertModel(MegatronBaseModel):
         else:
             loss_mean = torch.tensor([0.0]).cuda()
 
-        loss = loss_mean[0]
-        self.validation_step_outputs.append(loss) if prefix == 'val' else self.test_step_outputs.append(loss)
-        return loss
+        return loss_mean[0]
 
-    def on_validation_epoch_end(self):
+    def validation_epoch_end(self, outputs):
         if parallel_state.is_pipeline_last_stage():
-            averaged_loss = torch.stack(self.validation_step_outputs).mean()
+            averaged_loss = torch.stack(outputs).mean()
         else:
             averaged_loss = torch.tensor(0.0, dtype=torch.float32).cuda()
 
         torch.distributed.broadcast(averaged_loss, get_last_rank())
 
         self.log('val_loss', averaged_loss, prog_bar=True, batch_size=1)
-        self.validation_step_outputs.clear()  # free memory
 
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
-    def on_test_epoch_end(self):
-        averaged_loss = average_losses_across_data_parallel_group(self.test_step_outputs)
+    def test_epoch_end(self, outputs):
+        averaged_loss = average_losses_across_data_parallel_group(outputs)
         logging.info(f'test_loss: {averaged_loss[0]}')
 
     def loss_func(self, loss_mask, sentence_order, output_tensor):
@@ -686,7 +680,7 @@ class MegatronBertModel(MegatronBaseModel):
             f'Total number of model parameters: {total_num_parameters:.2e}.'
         )
 
-        resume_checkpoint_path = self.trainer.ckpt_path
+        resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
         if resume_checkpoint_path:
             init_consumed_samples = self._extract_consumed_samples_from_ckpt(resume_checkpoint_path)
         else:

@@ -92,9 +92,7 @@ class DialogueNearestNeighbourModel(NLPModel):
         raise NotImplementedError
 
     def test_step(self, batch, batch_idx):
-        loss = self.validation_step(batch, batch_idx, mode='test')
-        self.test_step_outputs.append(loss)
-        return loss
+        return self.validation_step(batch, batch_idx, mode='test')
 
     @staticmethod
     def mean_pooling(model_output, attention_mask):
@@ -123,22 +121,15 @@ class DialogueNearestNeighbourModel(NLPModel):
             gts.append(input_ids[i, gt])
             inputs.append(input_ids[i, 0])
 
-        loss = {'preds': torch.stack(preds), 'labels': torch.stack(gts), 'inputs': torch.stack(inputs)}
-        self.validation_step_outputs.append(loss)
-        return loss
+        return {'preds': torch.stack(preds), 'labels': torch.stack(gts), 'inputs': torch.stack(inputs)}
 
     def multi_test_epoch_end(self, outputs, dataloader_idx):
-        return self.on_validation_epoch_end()
+        return self.validation_epoch_end(outputs)
 
-    def on_validation_epoch_end(self):
+    def validation_epoch_end(self, outputs):
         """
         Get metrics based on the candidate label with the highest predicted likelihood and the ground truth label for intent
         """
-        prefix = "test" if self.trainer.testing else "val"
-        if prefix == "val":
-            outputs = self.validation_step_outputs
-        else:
-            outputs = self.test_step_outputs
         output_preds = torch.cat([output['preds'] for output in outputs], dim=0)
         output_labels = torch.cat([output['labels'] for output in outputs], dim=0)
         inputs = torch.cat([output['inputs'] for output in outputs], dim=0)
@@ -183,7 +174,6 @@ class DialogueNearestNeighbourModel(NLPModel):
         self.log('unfied_accuracy', label_acc * 100)
 
         self.classification_report.reset()
-        self.validation_step_outputs.clear() if prefix == 'val' else self.test_step_outputs.clear()
 
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
         if not train_data_config:

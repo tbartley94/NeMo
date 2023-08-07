@@ -112,11 +112,9 @@ class EntityLinkingModel(NLPModel, Exportable):
             self.log("val_loss", val_loss)
             logging.info(f"val loss: {val_loss}")
 
-        loss = {"val_loss": val_loss}
-        self.validation_step_outputs.append(loss)
-        return loss
+        return {"val_loss": val_loss}
 
-    def on_validation_epoch_end(self):
+    def validation_epoch_end(self, outputs):
         """
         Called at the end of validation to aggregate outputs.
 
@@ -125,12 +123,10 @@ class EntityLinkingModel(NLPModel, Exportable):
         Returns:
             
         """
-        if self.validation_step_outputs:
-            avg_loss = torch.stack(
-                [x["val_loss"] for x in self.validation_step_outputs if x["val_loss"] != None]
-            ).mean()
+        if outputs:
+            avg_loss = torch.stack([x["val_loss"] for x in outputs if x["val_loss"] != None]).mean()
             self.log(f"val_loss", avg_loss, prog_bar=True)
-            self.validation_step_outputs.clear()  # free memory
+
             return {"val_loss": avg_loss}
 
     def setup_training_data(self, train_data_config: Optional[DictConfig]):

@@ -7,7 +7,7 @@ trainer:
   precision: 16
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
-  use_distributed_sampler: False
+  replace_sampler_ddp: False
   benchmark: False
 
 exp_manager:

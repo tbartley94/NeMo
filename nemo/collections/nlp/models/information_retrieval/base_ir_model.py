@@ -109,18 +109,17 @@ class BaseIRModel(NLPModel):
             "query_ids": query_ids,
             "passage_ids": passage_ids,
         }
-        self.validation_step_outputs.append(data_for_val)
         return data_for_val
 
-    def on_validation_epoch_end(self):
+    def validation_epoch_end(self, outputs):
         """
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
         """
 
-        query_ids = torch.cat([x["query_ids"] for x in self.validation_step_outputs])
-        passage_ids = torch.cat([x["passage_ids"] for x in self.validation_step_outputs])
-        scores = torch.cat([x["scores"] for x in self.validation_step_outputs])
+        query_ids = torch.cat([x["query_ids"] for x in outputs])
+        passage_ids = torch.cat([x["passage_ids"] for x in outputs])
+        scores = torch.cat([x["scores"] for x in outputs])
 
         all_query_ids, all_passage_ids, all_scores = [], [], []
         if torch.distributed.is_initialized():
@@ -167,8 +166,8 @@ class BaseIRModel(NLPModel):
 
             val_mrr = self.calculate_mean_reciprocal_rank(query2passages, query2rels)
 
-        val_loss = torch.stack([x["val_loss"] for x in self.validation_step_outputs]).mean()
-        self.validation_step_outputs.clear()  # free memory
+        val_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
+
         tensorboard_logs = {
             "val_mrr": val_mrr,
             "val_loss": val_loss,

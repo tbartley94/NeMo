@@ -744,9 +744,9 @@ class CoreAttention(MegatronModule):
         self.precision = precision
         self.fp16 = False
         self.bf16 = False
-        if precision in ['bf16', 'bf16-mixed']:
+        if precision == 'bf16':
             self.bf16 = True
-        elif precision in [16, '16', '16-mixed']:
+        elif int(precision) == 16:
             self.fp16 = True
         self.multi_query_attention = multi_query_attention
         self.position_embedding_type = position_embedding_type

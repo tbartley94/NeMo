@@ -144,16 +144,14 @@ class TokenClassificationModel(NLPModel):
         labels = labels[subtokens_mask]
         tp, fn, fp, _ = self.classification_report(preds, labels)
 
-        loss = {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
-        self.validation_step_outputs.append(loss)
-        return loss
+        return {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
 
-    def on_validation_epoch_end(self):
+    def validation_epoch_end(self, outputs):
         """
         Called at the end of validation to aggregate outputs.
         outputs: list of individual outputs of each validation step.
         """
-        avg_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
+        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
 
         # calculate metrics and classification report
         precision, recall, f1, report = self.classification_report.compute()
@@ -166,7 +164,6 @@ class TokenClassificationModel(NLPModel):
         self.log('recall', recall)
 
         self.classification_report.reset()
-        self.validation_step_outputs.clear()  # free memory
 
     def test_step(self, batch, batch_idx):
         input_ids, input_type_ids, input_mask, subtokens_mask, loss_mask, labels = batch
@@ -179,12 +176,10 @@ class TokenClassificationModel(NLPModel):
         labels = labels[subtokens_mask]
         tp, fn, fp, _ = self.classification_report(preds, labels)
 
-        loss = {'test_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
-        self.test_step_outputs.append(loss)
-        return loss
+        return {'test_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
 
-    def on_test_epoch_end(self):
-        avg_loss = torch.stack([x['test_loss'] for x in self.test_step_outputs]).mean()
+    def test_epoch_end(self, outputs):
+        avg_loss = torch.stack([x['test_loss'] for x in outputs]).mean()
         # calculate metrics and classification report
         precision, recall, f1, report = self.classification_report.compute()
         logging.info(report)
@@ -193,7 +188,6 @@ class TokenClassificationModel(NLPModel):
         self.log('precision', precision)
         self.log('f1', f1)
         self.log('recall', recall)
-        self.test_step_outputs.clear()  # free memory
 
     def setup_training_data(self, train_data_config: Optional[DictConfig] = None):
         if train_data_config is None:

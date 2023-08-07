@@ -371,20 +371,19 @@ class ASRWithTTSModel(ASRModel):
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         """Validation step, forward to ASR model"""
-        loss = self.asr_model.validation_step(batch=batch, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
-        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(loss)
-        else:
-            self.validation_step_outputs.append(loss)
-        return loss
+        return self.asr_model.validation_step(batch=batch, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
 
-    def on_validation_epoch_end(self) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
+    def validation_epoch_end(
+        self, outputs: Union[List[Dict[str, torch.Tensor]], List[List[Dict[str, torch.Tensor]]]]
+    ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
         """Validation epoch end hook, forward to ASR model"""
-        return self.asr_model.on_validation_epoch_end()
+        return self.asr_model.validation_epoch_end(outputs=outputs)
 
-    def on_test_epoch_end(self) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
+    def test_epoch_end(
+        self, outputs: Union[List[Dict[str, torch.Tensor]], List[List[Dict[str, torch.Tensor]]]]
+    ) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
         """Test epoch end hook, forward to ASR model"""
-        return self.asr_model.on_test_epoch_end()
+        return self.asr_model.test_epoch_end(outputs=outputs)
 
     def val_dataloader(self):
         """Get valudation dataloader from ASR model"""
