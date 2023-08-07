@@ -790,6 +790,82 @@ class AudioCodesToCharDataset(_AudioTextDataset):
         audio_pad_id = int(self.codebook_size * self.n_codebooks_to_use)
         return _speech_collate_fn(batch, pad_id=self.manifest_processor.pad_id, audio_pad_id=audio_pad_id)
 
+
+class AudioCodesToBPEDataset(AudioToBPEDataset):
+    """Inherit from AudioToBPEDataset and replace featurizer and collate function
+    """
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports.
+               """
+        return {
+            'audio_signal': NeuralType(('B', 'd', 'T'), AudioSignal()),
+            'a_sig_length': NeuralType(tuple('B'), LengthsType()),
+            'transcripts': NeuralType(('B', 'T'), LabelsType()),
+            'transcript_length': NeuralType(tuple('B'), LengthsType()),
+            'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    def __init__(
+        self,
+        manifest_filepath: str,
+        codebook_size: int,
+        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        n_codebooks_to_use: int = None,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[int] = None,
+        min_duration: Optional[int] = None,
+        max_utts: int = 0,
+        use_start_end_token: bool = True,
+        return_sample_id: bool = False,
+    ):
+        super().__init__(
+            manifest_filepath=manifest_filepath,
+            tokenizer=tokenizer,
+            sample_rate=75,     # dummy value
+            int_values=False,   # dummy value
+            augmentor=augmentor,
+            max_duration=max_duration,
+            min_duration=min_duration,
+            max_utts=max_utts,
+            trim=False,        # dummy value
+            use_start_end_token=use_start_end_token,
+            return_sample_id=return_sample_id,
+        )
+
+        self.codebook_size = codebook_size
+        self.n_codebooks_to_use = n_codebooks_to_use
+
+        # replace the waveform featurizer with something that can load audio
+        self.featurizer = AudioCodesFeaturizer(codebook_size=codebook_size,
+                                               n_codebooks_to_use=n_codebooks_to_use,
+                                               augmentor=augmentor)
+    
+    def __getitem__(self, index):
+        sample = sample = self.manifest_processor.collection[index]
+        
+        features = self.featurizer.process(
+            sample.audio_file,
+        )
+
+        f, fl = features, torch.tensor(features.shape[1]).long()
+        t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
+
+        if self.return_sample_id:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index
+        else:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long()
+
+        return output
+    
+
+    def _collate_fn(self, batch):
+        audio_pad_id = int(self.codebook_size * self.n_codebooks_to_use)
+        return _speech_collate_fn(batch, pad_id=self.manifest_processor.pad_id, audio_pad_id=audio_pad_id)
+
+
+
 class _TarredAudioToTextDataset(IterableDataset):
     """
     A similar Dataset to the AudioToCharDataset/AudioToBPEDataset, but which loads tarred audio files.

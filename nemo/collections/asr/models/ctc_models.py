@@ -485,7 +485,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         else:
             input_signal_eltype = AudioSignal()
         return {
-            "input_signal": NeuralType(('B', 'T'), input_signal_eltype, optional=True),
+            "input_signal": NeuralType(('B', 'C', 'T'), input_signal_eltype, optional=True),
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
