@@ -66,6 +66,7 @@ __all__ = [
     'CodePatchAugmentation',
     'CodeTimePatchAugmentation',
     'CropOrPadSpectrogramAugmentation',
+    'CodeHierarchyPatchAugmentation',
 ]
 
 
@@ -769,6 +770,40 @@ class CodePatchAugmentation(NeuralModule):
                 masked_patches = random.sample(patches, mask_patches)
                 for mp in masked_patches:
                     augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
+        return augmented_spec
+
+
+class CodeHierarchyPatchAugmentation(CodePatchAugmentation):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.valid_codes = self.target_codes + self.valid_codes  # since we want to sample from only one code at a time
+
+    @typecheck()
+    def forward(self, input_spec, length):
+        augmented_spec = input_spec
+        min_len = torch.min(length)
+
+        if self.schedule is not None:
+            self._mask_fraction = random.uniform(self.min, self.max)
+        if self.mask_patches is None:
+            # masking specified as fraction
+            len_fraction = int(min_len * self._mask_fraction)
+            mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
+        else:
+            mask_patches = self.mask_patches
+
+        if min_len < self.patch_size * mask_patches:
+            mask_patches = min_len // self.patch_size
+
+        for idx in range(input_spec.shape[0]):
+            cur_len = length[idx]
+            q = random.sample(self.valid_codes, 1)[0]
+            patches = range(cur_len // self.patch_size)
+            masked_patches = random.sample(patches, mask_patches)
+            for mp in masked_patches:
+                augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
+                if q < augmented_spec.shape[1]: # not end code
+                    augmented_spec[idx, q+1:, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
         return augmented_spec
 
 
