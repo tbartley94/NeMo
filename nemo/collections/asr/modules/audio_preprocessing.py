@@ -795,15 +795,16 @@ class CodeHierarchyPatchAugmentation(CodePatchAugmentation):
         if min_len < self.patch_size * mask_patches:
             mask_patches = min_len // self.patch_size
 
+        q = random.sample(self.valid_codes, 1)[0]
+        # Masking out all codes beyond q (doing batch level to make easier to track)
+        if q < augmented_spec.shape[1] - 1: # not end code
+            augmented_spec[:, q+1:,:] = self.mask_value
         for idx in range(input_spec.shape[0]):
             cur_len = length[idx]
-            q = random.sample(self.valid_codes, 1)[0]
             patches = range(cur_len // self.patch_size)
             masked_patches = random.sample(patches, mask_patches)
             for mp in masked_patches:
                 augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
-                if q < augmented_spec.shape[1]: # not end code
-                    augmented_spec[idx, q+1:, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
         return augmented_spec
 
 
@@ -836,7 +837,7 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
             if alt_mask:
                 # Sampling
                 sample_idxs = self._get_mask_idxs(cur_len, mask_patches)
-                augmented_spec[idx, :, mask_idxs] = input_spec[idx, :, sample_idxs]
+                augmented_spec[idx, :, mask_idxs] = augmented_spec[idx, :, sample_idxs]
             else:
                 # Reg masking
                 augmented_spec[idx, :, mask_idxs] = self.mask_value # padding value

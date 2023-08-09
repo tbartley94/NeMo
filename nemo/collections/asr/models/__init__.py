@@ -35,4 +35,5 @@ from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.models.slu_models import SLUIntentSlotBPEModel
 from nemo.collections.asr.models.ssl_models import SpeechEncDecSelfSupervisedModel
 from nemo.collections.asr.models.ssl_encodec_models import SpeechEncDecEnCodecSelfSupervisedModel
+from nemo.collections.asr.models.ssl_soundstorm_models import SpeechEncDecSoundStormSelfSupervisedModel
 from nemo.collections.asr.models.transformer_bpe_models import EncDecTransfModelBPE
