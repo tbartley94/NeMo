@@ -468,17 +468,18 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         codec_vocab_size = self.codebook_size * self.n_codebooks_to_use
 
         self.pad_to = pad_to
-        self.pad_value = padding_idx if padding_idx else codec_vocab_size
+        self.pad_value = padding_idx if padding_idx is not None else codec_vocab_size
 
         if init_from_encodec is not None:
             logging.info("Copying over Encodec parameters.")
             encodec = torch.load(init_from_encodec)
             codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks_to_use)]
-            codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
+            if padding_idx is not None:
+                codebooks.append(torch.zeros((1, codebooks[0].shape[1]))) # padding vector
             codebooks = torch.cat(codebooks)
             self.embedding = torch.nn.Embedding.from_pretrained(codebooks, freeze=freeze, padding_idx=self.pad_value)
         else:
-            if padding_idx is not None:
+            if self.pad_value is not None:
                 self.embedding = torch.nn.Embedding(
                     num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
                     embedding_dim=embedding_dim,

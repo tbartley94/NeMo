@@ -546,7 +546,14 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             for dec_loss_name, dec_loss in self.decoder_losses.items():
                 self.decoder_losses_active[dec_loss_name] = self.trainer.global_step >= self.start_step[dec_loss_name]
 
-        loss_value, _ = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
+        loss_value, loss_val_dict = self.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len, targets, target_lengths)
+
+        tensorboard_logs = {
+            'val_loss': loss_value,
+        }
+
+        for loss_name, loss_val in loss_val_dict.items():
+            tensorboard_logs[loss_name] = loss_val
 
         if self.feat_pen:
             loss_value += self.feat_pen
@@ -557,6 +564,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
 
         return {
             'val_loss': loss_value,
+            'log': tensorboard_logs
         }
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):

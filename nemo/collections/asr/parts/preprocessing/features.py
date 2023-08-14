@@ -251,7 +251,7 @@ class AudioCodesFeaturizer(object):
 
         if self.n_codebooks_to_use is not None:
             codes = codes[:self.n_codebooks_to_use, :]
-        codes = self._scale_codebooks(codes)  # codebooks need to be scaled to 0 - n_codbookes * codebook_size for embeddings
+        codes = self._scale_codebooks(codes)  # codebooks need to be scaled for embeddings
         return torch.tensor(codes, dtype=torch.long)   # [n_codebooks, T]  embedding layers expects int or long
 
 class FeaturizerFactory(object):

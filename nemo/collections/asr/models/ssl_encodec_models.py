@@ -44,11 +44,11 @@ class Quantizer(NeuralModule):
     def __init__(self, embed, q, n):
         super().__init__()
         self.weight = embed
-        self.q = q
-        self.n = n
+        self.start = q*n
+        self.end = (q+1)*n
 
     def forward(self, x):
-        embed = self.weight[self.q*self.n:(self.q+1)*self.n].t()
+        embed = self.weight[self.start: self.end].t()
         dist = torch.stack([-(
             x[idx].pow(2).sum(1, keepdim=True)
             - 2 * x[idx] @ embed
@@ -60,13 +60,14 @@ class EmbProj(NeuralModule):
     def __init__(self, embed, q, n):
         super().__init__()
         self.weight = embed
-        self.q = q
-        self.n = n
+        self.start = q*n
+        self.end = (q+1)*n
+
         self.bias = nn.parameter.Parameter(torch.zeros(n))
         nn.init.uniform_(self.bias)
 
     def forward(self, x):
-        embed = self.weight[self.q*self.n:(self.q+1)*self.n]
+        embed = self.weight[self.start:self.end]
         return torch.matmul(x, embed.t()) + self.bias
 
 class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
@@ -75,21 +76,21 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         self.codebook_size = cfg.model_defaults.codebook_size
         self.n_codebooks = cfg.model_defaults.n_codebooks_to_use
-        self.output_dim = cfg.decoder.feat_out
 
-        cfg.decoder.feat_out *= self.n_codebooks  # predicting n codebooks at a time. 
         super().__init__(cfg=cfg, trainer=trainer)
-
         if self._cfg.preprocessor.get("init_from_encodec", False):
             self._cfg.preprocessor.init_from_encodec = None  # To stop from reloading every training.
-
-        codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 for _ in range(self.n_codebooks)])
+        
+        codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 / self.n_codebooks for _ in range(self.n_codebooks)])
         self.register_buffer("codebook_weights", torch.tensor(codebook_weights, requires_grad=False, dtype=torch.float32))
 
+        # Per codebook heads used for decoding
+        self.code_output_dim = cfg.decoder.feat_out // self.n_codebooks  # Divided up per codebook
         self.decode_mode = self._cfg.model_defaults.get("decode_mode", "base")
         if self.decode_mode == "base":
-            self.heads = nn.ModuleList(nn.Linear(self.output_dim, self.codebook_size) for _ in range(self.n_codebooks)) # Just a dummy value so decoder looks nice
+            self.heads = nn.ModuleList(nn.Linear(self.code_output_dim, self.codebook_size) for _ in range(self.n_codebooks))
         else:
+            # We use the preprocessor embeddings as a decoder head.
             codebooks = self.preprocessor.embedding.weight
             if self.decode_mode == "quantize":
                 self.heads = nn.ModuleList(Quantizer(codebooks, q, self.codebook_size) for q in range(self.n_codebooks))
@@ -120,9 +121,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             augmentor = None
 
         shuffle = config['shuffle']
-        device = 'gpu' if torch.cuda.is_available() else 'cpu'
         if config.get('use_dali', False):
-            device_id = self.local_rank if device == 'gpu' else None
             logging.warning(f"Dali dataset is not supported")
             return None
         # Instantiate tarred dataset loader or normal dataset loader
@@ -196,29 +195,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
             3) The encoded features tensor of shape [B, D, T].
             2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
         """
-        # Reset access registry
-        if self.is_access_enabled():
-            self.reset_registry()
 
-        # Check for special flag for validation step
-        if hasattr(self, '_in_validation_step'):
-            in_validation_step = self._in_validation_step
-        else:
-            in_validation_step = False
-
-        # reset module registry from AccessMixin
-        if (
-            (self.training or in_validation_step)
-            and self.decoder_losses is not None
-            and self.output_from_layer is not None
-            and len(self.output_from_layer) > 0
-        ):
-            layer_names = list(self.output_from_layer.values())
-            register_layer = any([name is not None for name in layer_names])
-
-            if register_layer:
-                self.access_cfg['save_encoder_tensors'] = True
-                self.set_access_enabled(access_enabled=True)
         has_input_signal = input_signal is not None and input_signal_length is not None
         has_processed_signal = processed_signal is not None and processed_signal_length is not None
         if (has_input_signal ^ has_processed_signal) == False:
@@ -247,13 +224,13 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         
         decoded = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD*N
-        decoded_q = decoded.view(decoded.shape[0], decoded.shape[1], self.n_codebooks, self.output_dim)
+        decoded_q = decoded.view(decoded.shape[0], decoded.shape[1], self.n_codebooks, self.code_output_dim)
         # -> BxTxNxD
         for idx in range(self.n_codebooks):
-            if torch.any(spec_masks[:,idx,:]):
+            if torch.any(spec_masks[:,idx,:]): # latter for cases where we want to block out all code
                 logits = self.heads[idx](decoded_q[:,:,idx,:])
                 curr_loss = self.loss(
-                    spec_masks=spec_masks[:,idx,:].unsqueeze(dim=1),
+                    spec_masks=spec_masks[:,idx,:].unsqueeze(dim=1),  # For compatibility with loss
                     decoder_outputs=nn.functional.log_softmax(logits, -1),
                     targets= spectrograms[:,idx,:] - self.codebook_size*idx,  # We only calculate loss in relation to codebook
                 )

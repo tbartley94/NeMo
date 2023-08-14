@@ -778,7 +778,7 @@ class AudioCodesToCharDataset(_AudioTextDataset):
 
         f, fl = features, torch.tensor(features.shape[1]).long()
         t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
-
+    
         if self.return_sample_id:
             output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index
         else:
@@ -800,7 +800,7 @@ class AudioCodesToBPEDataset(AudioToBPEDataset):
         """Returns definitions of module output ports.
                """
         return {
-            'audio_signal': NeuralType(('B', 'd', 'T'), AudioSignal()),
+            'audio_signal': NeuralType(('B', 'D', 'T'), AudioSignal()),
             'a_sig_length': NeuralType(tuple('B'), LengthsType()),
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
