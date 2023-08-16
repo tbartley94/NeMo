@@ -20,7 +20,6 @@ from nemo.collections.asr.modules.audio_preprocessing import (
     AudioCodeToEmbeddingPreprocessor,
     CropOrPadSpectrogramAugmentation,
     MaskedPatchAugmentation,
-    MaskedPatchCodePatchAugmentation,
     CodePatchAugmentation,
     CodeTimePatchAugmentation,
     SpectrogramAugmentation,

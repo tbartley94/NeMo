@@ -62,7 +62,6 @@ __all__ = [
     'AudioToMFCCPreprocessor',
     'SpectrogramAugmentation',
     'MaskedPatchAugmentation',
-    'MaskedPatchCodePatchAugmentation',
     'CodePatchAugmentation',
     'CodeTimePatchAugmentation',
     'CropOrPadSpectrogramAugmentation',
@@ -470,7 +469,7 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         self.pad_to = pad_to
         self.pad_value = padding_idx if padding_idx is not None else codec_vocab_size
 
-        if init_from_encodec is not None:
+        if False: #init_from_encodec is not None:
             logging.info("Copying over Encodec parameters.")
             encodec = torch.load(init_from_encodec)
             codebooks = [encodec[f"quantizer.vq.layers.{n}._codebook.embed"] for n in range(self.n_codebooks_to_use)]
@@ -722,12 +721,14 @@ class MaskedPatchAugmentation(NeuralModule):
 
 class CodePatchAugmentation(NeuralModule):
     def __init__(
-        self, patch_size: int = 48, mask_patches: float = 10.0, mask_value: int = 0, n_codes: int = 8, n_targets: int = 1, target_codes: list = [], exclude_codes: list = [], schedule: bool = None, p_min: float = 0.1, p_max: float = 1.0
+        self, patch_size: int = 48, mask_patches: float = 10.0, mask_value: int = 0, code_masks: int = 0, n_codebooks: int = 0, always_mask: list = [], never_mask: list = [], schedule: bool = None, p_min: float = 0.1, p_max: float = 1.0
     ):
         super().__init__()
-        self.n_targets = n_targets
-        self.target_codes = target_codes
-        self.valid_codes = [n for n in range(n_codes) if n not in target_codes and n not in exclude_codes]
+        self.code_masks = code_masks
+        if self.code_masks:
+            assert n_codebooks > 0
+            self.always_mask = always_mask
+            self.valid_codes = [n for n in range(n_codebooks) if n not in always_mask and n not in never_mask]
 
         self.patch_size = patch_size
         self.mask_value = mask_value
@@ -765,12 +766,14 @@ class CodePatchAugmentation(NeuralModule):
 
         for idx in range(input_spec.shape[0]):
             cur_len = length[idx]
-            codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
-            for q in codes:
-                patches = range(cur_len // self.patch_size)
-                masked_patches = random.sample(patches, mask_patches)
-                for mp in masked_patches:
-                    augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
+            patches = range(cur_len // self.patch_size)
+            masked_patches = random.sample(patches, mask_patches)
+            for mp in masked_patches:
+                augmented_spec[idx, :, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
+            if self.code_masks:
+                codes = self.always_mask + random.sample(self.valid_codes, self.code_masks)
+                for q in codes:
+                    augmented_spec[idx, q, :] = self.mask_value
         return augmented_spec
 
 
@@ -853,47 +856,7 @@ class CodeTimePatchAugmentation(CodePatchAugmentation):
         offsets = torch.arange(self.patch_size)
         patch_idxs = intervals + offsets
         return patch_idxs.view(-1)
-
-
-class MaskedPatchCodePatchAugmentation(CodePatchAugmentation):
-    def __init__(self, *args, p_samp: float = 0.1, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._p_samp = p_samp
-
-    @typecheck()
-    def forward(self, input_spec, length):
-        augmented_spec = input_spec
-        min_len = torch.min(length)
-
-        if self.schedule is not None:
-            self._mask_fraction = random.uniform(self.min, self.max)
-        if self.mask_patches is None:
-            # masking specified as fraction
-            len_fraction = int(min_len * self._mask_fraction)
-            mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
-        else:
-            mask_patches = self.mask_patches
-
-        if min_len < self.patch_size * mask_patches:
-            mask_patches = min_len // self.patch_size
-
-        for idx in range(input_spec.shape[0]):
-            cur_len = length[idx]
-            alt_mask = random.random() < self._p_samp # determines if batch uses time sampling or masking
-            if alt_mask:
-                codes = self.target_codes + random.sample(self.valid_codes, self.n_targets)
-                for q in codes:
-                    patches = range(cur_len // self.patch_size)
-                    masked_patches = random.sample(patches, mask_patches)
-                    for mp in masked_patches:
-                        augmented_spec[idx, q, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
-            else:
-                patches = range(cur_len // self.patch_size)
-                masked_patches = random.sample(patches, mask_patches)
-                for mp in masked_patches:
-                    augmented_spec[idx, :, mp * self.patch_size : (mp + 1) * self.patch_size] = self.mask_value
-        return augmented_spec
-
+    
 
 class CropOrPadSpectrogramAugmentation(NeuralModule):
     """

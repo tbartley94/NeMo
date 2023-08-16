@@ -28,6 +28,8 @@ from nemo.core.neural_types import (
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
+from omegaconf import OmegaConf
+
 from pytorch_lightning import Trainer
 
 from nemo.core.classes.module import NeuralModule
@@ -70,17 +72,17 @@ class EmbProj(NeuralModule):
         embed = self.weight[self.start:self.end]
         return torch.matmul(x, embed.t()) + self.bias
 
+
 class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
     """Base class for encoder-decoder models used for self-supervised encoder pre-training"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        self.codebook_size = cfg.model_defaults.codebook_size
-        self.n_codebooks = cfg.model_defaults.n_codebooks_to_use
-
         super().__init__(cfg=cfg, trainer=trainer)
         if self._cfg.preprocessor.get("init_from_encodec", False):
             self._cfg.preprocessor.init_from_encodec = None  # To stop from reloading every training.
-        
+
+        self.codebook_size = cfg.model_defaults.codebook_size
+        self.n_codebooks = cfg.model_defaults.n_codebooks_to_use
         codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 / self.n_codebooks for _ in range(self.n_codebooks)])
         self.register_buffer("codebook_weights", torch.tensor(codebook_weights, requires_grad=False, dtype=torch.float32))
 
@@ -227,7 +229,7 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
         decoded_q = decoded.view(decoded.shape[0], decoded.shape[1], self.n_codebooks, self.code_output_dim)
         # -> BxTxNxD
         for idx in range(self.n_codebooks):
-            if torch.any(spec_masks[:,idx,:]): # latter for cases where we want to block out all code
+            if torch.any(spec_masks[:,idx,:]):
                 logits = self.heads[idx](decoded_q[:,:,idx,:])
                 curr_loss = self.loss(
                     spec_masks=spec_masks[:,idx,:].unsqueeze(dim=1),  # For compatibility with loss
