@@ -83,7 +83,8 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
         self.codebook_size = cfg.model_defaults.codebook_size
         self.n_codebooks = cfg.model_defaults.n_codebooks_to_use
-        codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 / self.n_codebooks for _ in range(self.n_codebooks)])
+        self.decode_limit = self._cfg.model_defaults.get("decode_limit", self.n_codebooks)
+        codebook_weights = self._cfg.model_defaults.get("codebook_weights", [1 / self.decode_limit for _ in range(self.decode_limit)])
         self.register_buffer("codebook_weights", torch.tensor(codebook_weights, requires_grad=False, dtype=torch.float32))
 
         # Per codebook heads used for decoding
@@ -222,13 +223,13 @@ class SpeechEncDecEnCodecSelfSupervisedModel(SpeechEncDecSelfSupervisedModel):
 
     def decoder_loss_step(self, spectrograms, spec_masks, encoded, encoded_len, targets=None, target_lengths=None):
         loss_val_dict = {}
-        loss_value = encoded.new_zeros(self.n_codebooks)
+        loss_value = encoded.new_zeros(self.decode_limit)
         
         decoded = self.decoder_ssl(encoder_output=encoded)
         # -> BxTxD*N
         decoded_q = decoded.view(decoded.shape[0], decoded.shape[1], self.n_codebooks, self.code_output_dim)
         # -> BxTxNxD
-        for idx in range(self.n_codebooks):
+        for idx in range(self.decode_limit):
             if torch.any(spec_masks[:,idx,:]):
                 logits = self.heads[idx](decoded_q[:,:,idx,:])
                 curr_loss = self.loss(
