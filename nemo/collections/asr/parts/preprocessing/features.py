@@ -41,7 +41,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
+from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor, RandomCodePerturbation
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.utils import logging
 
@@ -162,7 +162,7 @@ def make_seq_mask_like(
 
 class WaveformFeaturizer(object):
     def __init__(self, sample_rate=16000, int_values=False, augmentor=None):
-        self.augmentor = augmentor if augmentor is not None else AudioAugmentor()
+        self.augmentor = augmentor
         self.sample_rate = sample_rate
         self.int_values = int_values
 
@@ -227,10 +227,9 @@ class AudioCodesFeaturizer(object):
     ):
         self.n_codebooks_to_use = n_codebooks_to_use
         self.codebook_size = codebook_size
-        self.augmentor = augmentor if augmentor is not None else AudioAugmentor()
-    
+        self.augmentor = augmentor if augmentor is None else RandomCodePerturbation()
+
     def _scale_codebooks(self, codes):
-        codes = codes.copy()
         for n in range(1, codes.shape[0]):
             codes[n, :] += self.codebook_size * n
         return codes
@@ -238,21 +237,25 @@ class AudioCodesFeaturizer(object):
     def process(self, file_path):
         """load npz file from filepath
         """
-        codes = np.load(file_path)
-        codes = codes["codes"]  # [n_codebooks, n_frames]  
-        
+        # Using LL
+        if self.augmentor is not None:
+            codes = torch.load(file_path, map_location='cpu').squeeze(0)
+        else:
+            codes = np.load(file_path)
+            codes = codes["codes"]  # [n_codebooks, n_frames]  
         # if n_codebooks_to_use is greater than the number of codebooks in the file, raise error
         if self.n_codebooks_to_use is not None and self.n_codebooks_to_use > codes.shape[0]:
             raise ValueError(
                 f"n_codebooks_to_use ({self.n_codebooks_to_use}) is greater than the number of codebooks in the file ({codes.shape[0]})."
             )
-        
         assert len(codes.shape) == 2, f"codes must be 2D, got {len(codes.shape)}"
-
+        if self.augmentor is not None:
+            codes = self.augmentor.perturb(codes)
         if self.n_codebooks_to_use is not None:
             codes = codes[:self.n_codebooks_to_use, :]
         codes = self._scale_codebooks(codes)  # codebooks need to be scaled for embeddings
         return torch.tensor(codes, dtype=torch.long)   # [n_codebooks, T]  embedding layers expects int or long
+    
 
 class FeaturizerFactory(object):
     def __init__(self):
