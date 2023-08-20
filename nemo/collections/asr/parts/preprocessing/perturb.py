@@ -1055,7 +1055,7 @@ class RandomSegmentPerturbation(Perturbation):
 
 
 class RandomCodePerturbation(Perturbation):
-    def __init__(self, min_duration=0.0, max_duration=32.0, rng=None):
+    def __init__(self, min_duration=1.0, max_duration=32.0, rng=None):
         if min_duration < 0 or max_duration <= 0:
             raise ValueError("duration should be >= 0")
         self._min_duration = min_duration
@@ -1064,11 +1064,10 @@ class RandomCodePerturbation(Perturbation):
 
     def perturb(self, data):
         n_samples = data.shape[-1]
-        duration = int(random.uniform(self._min_duration, self._max_duration) * 75)
-        if duration > n_samples:
-            raise ValueError(f"audio length < {duration} samples and pad_to_duration")
-        else:
-            start_time = random.randint(0, n_samples - duration)
+        min_dur = min(n_samples, self._min_duration * 75)
+        max_dur = min(n_samples, self._max_duration * 75)
+        duration = int(random.uniform(min_dur, max_dur))
+        start_time = random.randint(0, n_samples - duration)
         end_time = start_time + duration
         return data[:,start_time:end_time]
 
