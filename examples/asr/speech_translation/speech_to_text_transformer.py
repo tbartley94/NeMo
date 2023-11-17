@@ -42,7 +42,8 @@ python speech_to_text_transformer.py \
 
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
-
+import torch
+import copy
 from nemo.collections.asr.models import EncDecTransfModelBPE
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
@@ -58,12 +59,18 @@ def main(cfg):
     asr_model = EncDecTransfModelBPE(cfg=cfg.model, trainer=trainer)
 
     # Initialize the weights of the model from another model, if provided via config
+    original = [_.clone() for _ in asr_model.transf_decoder.parameters()]
     asr_model.maybe_init_from_pretrained_checkpoint(cfg)
-    trainer.fit(asr_model)
+    for i, j in zip(asr_model.transf_decoder.parameters(), original):
+        print(asr_model.transf_decoder)
+        print(i,j)
+        assert torch.equal(i, j)
+        assert i.data_ptr() != j.data_ptr()
+    #trainer.fit(asr_model)
 
-    if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
-        if asr_model.prepare_test(trainer):
-            trainer.test(asr_model)
+    # if hasattr(cfg.model, 'test_ds') and cfg.model.test_ds.manifest_filepath is not None:
+    #     if asr_model.prepare_test(trainer):
+    #         trainer.test(asr_model)
 
 
 if __name__ == '__main__':
