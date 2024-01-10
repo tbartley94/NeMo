@@ -264,10 +264,21 @@ class WER(Metric):
 
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
+<<<<<<< HEAD
             self.decode = self.decoding.rnnt_decoder_predictions_tensor
         elif isinstance(self.decoding, AbstractCTCDecoding):
             self.decode = lambda pred, pred_len: self.decoding.ctc_decoder_predictions_tensor(
                 pred, decoder_outputs=pred_len, fold_consecutive=self.fold_consecutive
+=======
+            self.decode = lambda predictions, predictions_lengths: self.decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=predictions, encoded_lengths=predictions_lengths
+            )
+        elif isinstance(self.decoding, AbstractCTCDecoding):
+            self.decode = lambda predictions, predictions_lengths: self.decoding.ctc_decoder_predictions_tensor(
+                decoder_outputs=predictions,
+                decoder_lengths=predictions_lengths,
+                fold_consecutive=self.fold_consecutive,
+>>>>>>> 76a712a323c70e5701a730048627509a11336424
             )
         else:
             raise TypeError(f"WER metric does not support decoding of type {type(self.decoding)}")
