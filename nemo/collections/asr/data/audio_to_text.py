@@ -705,6 +705,135 @@ class AudioToBPEDataset(_AudioTextDataset):
         )
 
 
+class AudioToBPELangIDDataset(AudioToBPEDataset):
+    """
+    TODO: Add documentaion
+    """
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports.
+               """
+        return {
+            'audio_signal': NeuralType(('B', 'T'), AudioSignal()),
+            'a_sig_length': NeuralType(tuple('B'), LengthsType()),
+            'transcripts': NeuralType(('B', 'T'), LabelsType()),
+            'transcript_length': NeuralType(tuple('B'), LengthsType()),
+            'lang_id': NeuralType(tuple('B'), EncodedRepresentation()),
+            'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    def __init__(
+        self,
+        manifest_filepath: str,
+        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        lang_labels: List[str],
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[int] = None,
+        min_duration: Optional[int] = None,
+        max_utts: int = 0,
+        trim: bool = False,
+        use_start_end_token: bool = True,
+        return_sample_id: bool = False,
+        channel_selector: Optional[ChannelSelectorType] = None,
+    ):
+
+        super().__init__(
+            manifest_filepath=manifest_filepath,
+            tokenizer=tokenizer,
+            sample_rate=sample_rate,
+            int_values=int_values,
+            augmentor=augmentor,
+            max_duration=max_duration,
+            min_duration=min_duration,
+            max_utts=max_utts,
+            trim=trim,
+            use_start_end_token=use_start_end_token,
+            return_sample_id=return_sample_id,
+            channel_selector=channel_selector,
+        )
+
+        self.lang_parser = parsers.make_parser(
+            labels=lang_labels, do_normalize=False, do_lowercase=False
+        )
+
+    def __getitem__(self, index):
+        sample = self.manifest_processor.collection[index]
+        offset = sample.offset
+
+        if offset is None:
+            offset = 0
+
+        features = self.featurizer.process(
+            sample.audio_file,
+            offset=offset,
+            duration=sample.duration,
+            trim=self.trim,
+            orig_sr=sample.orig_sr,
+            channel_selector=self.channel_selector,
+        )
+        f, fl = features, torch.tensor(features.shape[0]).long()
+
+        t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
+
+        lang_token = self.lang_parser(sample.lang)[0]
+
+        if self.return_sample_id:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), lang_token, index
+        else:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), lang_token
+
+        return output
+
+    def _collate_fn(self, batch):
+        packed_batch = list(zip(*batch))
+        if len(packed_batch) == 6:
+            _, audio_lengths, _, tokens_lengths, lang_ids, sample_ids = packed_batch
+        elif len(packed_batch) == 5:
+            sample_ids = None
+            _, audio_lengths, _, tokens_lengths, lang_ids = packed_batch
+        else:
+            raise ValueError("Expects 4 or 5 tensors in the batch!")
+        max_audio_len = 0
+        has_audio = audio_lengths[0] is not None
+        if has_audio:
+            max_audio_len = max(audio_lengths).item()
+        max_tokens_len = max(tokens_lengths).item()
+
+        audio_signal, tokens = [], []
+        for b in batch:
+            sig, sig_len, tokens_i, tokens_i_len = b[0], b[1], b[2], b[3]
+            if has_audio:
+                sig_len = sig_len.item()
+                if sig_len < max_audio_len:
+                    pad = (0, max_audio_len - sig_len)
+                    sig = torch.nn.functional.pad(sig, pad)
+                audio_signal.append(sig)
+            tokens_i_len = tokens_i_len.item()
+            if tokens_i_len < max_tokens_len:
+                pad = (0, max_tokens_len - tokens_i_len)
+                tokens_i = torch.nn.functional.pad(tokens_i, pad, value=self.manifest_processor.pad_id)
+            tokens.append(tokens_i)
+
+        if has_audio:
+            audio_signal = torch.stack(audio_signal)
+            audio_lengths = torch.stack(audio_lengths)
+        else:
+            audio_signal, audio_lengths = None, None
+
+        tokens = torch.stack(tokens)
+        tokens_lengths = torch.stack(tokens_lengths)
+
+        lang_ids= torch.tensor(lang_ids, dtype=torch.int32)
+        if sample_ids is None:
+            return audio_signal, audio_lengths, tokens, tokens_lengths, lang_ids
+        else:
+            sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
+            return audio_signal, audio_lengths, tokens, tokens_lengths, lang_ids, sample_ids
+    
+
 class _TarredAudioToTextDataset(IterableDataset):
     """
     A similar Dataset to the AudioToCharDataset/AudioToBPEDataset, but which loads tarred audio files.
@@ -1297,6 +1426,148 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             return_sample_id=return_sample_id,
         )
 
+
+class TarredAudioToBPELangIDDataset(TarredAudioToBPEDataset):
+    """
+    """
+
+    def __init__(
+        self,
+        audio_tar_filepaths: Union[str, List[str]],
+        manifest_filepath: str,
+        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        lang_labels: str,
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+        shuffle_n: int = 0,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        trim: bool = False,
+        use_start_end_token: bool = True,
+        shard_strategy: str = "scatter",
+        shard_manifests: bool = False,
+        global_rank: int = 0,
+        world_size: int = 0,
+        return_sample_id: bool = False,
+    ):
+
+        super().__init__(
+            audio_tar_filepaths=audio_tar_filepaths,
+            manifest_filepath=manifest_filepath,
+            tokenizer=tokenizer,
+            sample_rate=sample_rate,
+            int_values=int_values,
+            augmentor=augmentor,
+            shuffle_n=shuffle_n,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            trim=trim,
+            use_start_end_token=use_start_end_token,
+            shard_strategy=shard_strategy,
+            shard_manifests=shard_manifests,
+            global_rank=global_rank,
+            world_size=world_size,
+            return_sample_id=return_sample_id,
+        )
+
+        self.lang_parser = parsers.make_parser(
+            labels=lang_labels, do_normalize=False, do_lowercase=False
+        )
+
+    def _build_sample(self, tup):
+        """Builds the training sample by combining the data from the WebDataset with the manifest info.
+        """
+        audio_bytes, audio_filename, offset_id = tup
+
+        # Grab manifest entry from self.manifest_preprocessor.collection
+        file_id, _ = os.path.splitext(os.path.basename(audio_filename))
+        manifest_idx = self.manifest_processor.collection.mapping[file_id][offset_id]
+        manifest_entry = self.manifest_processor.collection[manifest_idx]
+
+        offset = manifest_entry.offset
+        if offset is None:
+            offset = 0
+
+        # Convert audio bytes to IO stream for processing (for SoundFile to read)
+        audio_filestream = io.BytesIO(audio_bytes)
+        features = self.featurizer.process(
+            audio_filestream,
+            offset=offset,
+            duration=manifest_entry.duration,
+            trim=self.trim,
+            orig_sr=manifest_entry.orig_sr,
+        )
+        audio_filestream.close()
+
+        # Audio features
+        f, fl = features, torch.tensor(features.shape[0]).long()
+
+        # Text features
+        t, tl = manifest_entry.text_tokens, len(manifest_entry.text_tokens)
+
+        lang_token = self.lang_parser(manifest_entry.lang)[0]
+
+        self.manifest_processor.process_text_by_sample(sample=manifest_entry)
+
+        if self.bos_id is not None:
+            t = [self.bos_id] + t
+            tl += 1
+        if self.eos_id is not None:
+            t = t + [self.eos_id]
+            tl += 1
+
+        if self.return_sample_id:
+            return f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), lang_token, manifest_idx
+        else:
+            return f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), lang_token
+
+    def _collate_fn(self, batch):
+        packed_batch = list(zip(*batch))
+        if len(packed_batch) == 6:
+            _, audio_lengths, _, tokens_lengths, lang_ids, sample_ids = packed_batch
+        elif len(packed_batch) == 5:
+            sample_ids = None
+            _, audio_lengths, _, tokens_lengths, lang_ids = packed_batch
+        else:
+            raise ValueError("Expects 4 or 5 tensors in the batch!")
+        max_audio_len = 0
+        has_audio = audio_lengths[0] is not None
+        if has_audio:
+            max_audio_len = max(audio_lengths).item()
+        max_tokens_len = max(tokens_lengths).item()
+
+        audio_signal, tokens = [], []
+        for b in batch:
+            sig, sig_len, tokens_i, tokens_i_len = b[0], b[1], b[2], b[3]
+            if has_audio:
+                sig_len = sig_len.item()
+                if sig_len < max_audio_len:
+                    pad = (0, max_audio_len - sig_len)
+                    sig = torch.nn.functional.pad(sig, pad)
+                audio_signal.append(sig)
+            tokens_i_len = tokens_i_len.item()
+            if tokens_i_len < max_tokens_len:
+                pad = (0, max_tokens_len - tokens_i_len)
+                tokens_i = torch.nn.functional.pad(tokens_i, pad, value=self.manifest_processor.pad_id)
+            tokens.append(tokens_i)
+
+        if has_audio:
+            audio_signal = torch.stack(audio_signal)
+            audio_lengths = torch.stack(audio_lengths)
+        else:
+            audio_signal, audio_lengths = None, None
+
+        tokens = torch.stack(tokens)
+        tokens_lengths = torch.stack(tokens_lengths)
+
+        lang_ids= torch.tensor(lang_ids, dtype=torch.int32)
+        if sample_ids is None:
+            return audio_signal, audio_lengths, tokens, tokens_lengths, lang_ids
+        else:
+            sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
+            return audio_signal, audio_lengths, tokens, tokens_lengths, lang_ids, sample_ids
+  
 
 class BucketingDataset(IterableDataset):
     """

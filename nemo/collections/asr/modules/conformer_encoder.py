@@ -46,7 +46,7 @@ from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
-from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType
+from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType, EncodedRepresentation
 from nemo.utils import logging
 
 __all__ = ['ConformerEncoder']
@@ -190,6 +190,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             {
                 "audio_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
                 "length": NeuralType(tuple('B'), LengthsType()),
+                'lang_id': NeuralType(('B','D'), EncodedRepresentation(), optional=True),
                 "cache_last_channel": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
@@ -438,6 +439,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         # will be set in self.forward() if defined in AccessMixin config
         self.interctc_capture_at_layers = None
 
+        self.insertion_location = None
+
     def forward_for_export(
         self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
     ):
@@ -486,7 +489,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
     @typecheck()
     def forward(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, lang_id=None,
     ):
         return self.forward_internal(
             audio_signal,
@@ -494,10 +497,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            lang_id=lang_id,
         )
 
     def forward_internal(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, lang_id=None,
     ):
         self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
 
@@ -561,6 +565,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel_next = []
 
         for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
+            if lth == self.insertion_location:
+                audio_signal = self._add_embedding(audio_signal, pad_mask, lang_id)
             original_signal = audio_signal
             if cache_last_channel is not None:
                 cache_last_channel_cur = cache_last_channel[lth]
@@ -645,6 +651,29 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
         else:
             return audio_signal, length
+
+    def _add_embedding(self, audio, pad_mask, lang):
+        # Assumes audio is BxTxD
+        input, pad_mask, lang = audio, pad_mask, lang.unsqueeze(1)
+
+        if self.insertion_method == "expand":
+            lang = lang.expand(-1, audio.shape[1], -1)
+            lang = lang.masked_fill(pad_mask.unsqueeze(-1), 0.0)
+            input = torch.concat([audio, lang], dim=2)
+            input = self.insertion_proj(input)
+        elif self.insertion_method == "add":
+            lang = lang.expand_as(input)
+            lang = lang.masked_fill(pad_mask.unsqueeze(-1), 0.0)
+            input = input + lang
+        else:
+            raise NameError
+        return input
+
+    def _update_insertion(self, cfg):
+        self.insertion_location = cfg.embed_loc
+        self.insertion_method = cfg.embed_method
+        if self.insertion_method == "expand":
+            self.insertion_proj = nn.Linear(self.d_model+cfg.lang_embed_dim, self.d_model)
 
     def update_max_seq_length(self, seq_length: int, device):
         # Find global max audio length across all nodes
