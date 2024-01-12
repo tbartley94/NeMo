@@ -223,53 +223,39 @@ def get_bpe_dataset(
     Returns:
         An instance of AudioToBPEDataset.
     """
-    dataset = audio_to_text.AudioToBPEDataset(
-        manifest_filepath=config['manifest_filepath'],
-        tokenizer=tokenizer,
-        sample_rate=config['sample_rate'],
-        int_values=config.get('int_values', False),
-        augmentor=augmentor,
-        max_duration=config.get('max_duration', None),
-        min_duration=config.get('min_duration', None),
-        max_utts=config.get('max_utts', 0),
-        trim=config.get('trim_silence', False),
-        use_start_end_token=config.get('use_start_end_token', True),
-        return_sample_id=config.get('return_sample_id', False),
-        channel_selector=config.get('channel_selector', None),
-    )
+    lang_labels = config.get('lang_labels')
+    if lang_labels:
+        dataset = audio_to_text.AudioToBPELangIDDataset(
+            manifest_filepath=config['manifest_filepath'],
+            tokenizer=tokenizer,
+            lang_labels=config['lang_labels'],
+            sample_rate=config['sample_rate'],
+            int_values=config.get('int_values', False),
+            augmentor=augmentor,
+            max_duration=config.get('max_duration', None),
+            min_duration=config.get('min_duration', None),
+            max_utts=config.get('max_utts', 0),
+            trim=config.get('trim_silence', False),
+            use_start_end_token=config.get('use_start_end_token', True),
+            return_sample_id=config.get('return_sample_id', False),
+            channel_selector=config.get('channel_selector', None),
+        )
+    else:
+        dataset = audio_to_text.AudioToBPEDataset(
+            manifest_filepath=config['manifest_filepath'],
+            tokenizer=tokenizer,
+            sample_rate=config['sample_rate'],
+            int_values=config.get('int_values', False),
+            augmentor=augmentor,
+            max_duration=config.get('max_duration', None),
+            min_duration=config.get('min_duration', None),
+            max_utts=config.get('max_utts', 0),
+            trim=config.get('trim_silence', False),
+            use_start_end_token=config.get('use_start_end_token', True),
+            return_sample_id=config.get('return_sample_id', False),
+            channel_selector=config.get('channel_selector', None),
+        )
     return dataset
-
-def get_bpe_langid_dataset(
-    config: dict, tokenizer: 'TokenizerSpec', augmentor: Optional['AudioAugmentor'] = None
-) -> audio_to_text.AudioToBPEDataset:
-    """
-    Instantiates a Byte Pair Encoding / Word Piece Encoding based AudioToBPEDataset.
-
-    Args:
-        config: Config of the AudioToBPEDataset.
-        tokenizer: An instance of a TokenizerSpec object.
-        augmentor: Optional AudioAugmentor object for augmentations on audio data.
-
-    Returns:
-        An instance of AudioToBPEDataset.
-    """
-    dataset = audio_to_text.AudioToBPELangIDDataset(
-        manifest_filepath=config['manifest_filepath'],
-        tokenizer=tokenizer,
-        lang_labels=config['lang_labels'],
-        sample_rate=config['sample_rate'],
-        int_values=config.get('int_values', False),
-        augmentor=augmentor,
-        max_duration=config.get('max_duration', None),
-        min_duration=config.get('min_duration', None),
-        max_utts=config.get('max_utts', 0),
-        trim=config.get('trim_silence', False),
-        use_start_end_token=config.get('use_start_end_token', True),
-        return_sample_id=config.get('return_sample_id', False),
-        channel_selector=config.get('channel_selector', None),
-    )
-    return dataset
-
 
 def get_concat_tarred_dataset(
     config: dict,
@@ -891,11 +877,7 @@ def get_audio_to_text_bpe_dataset_from_config(
                 augmentor=augmentor,
             )
         else:
-            lang_labels = config.get('lang_labels')
-            if lang_labels:
-                dataset = get_bpe_langid_dataset(config=config, tokenizer=tokenizer, augmentor=augmentor)
-            else:
-                dataset = get_bpe_dataset(config=config, tokenizer=tokenizer, augmentor=augmentor)
+            dataset = get_bpe_dataset(config=config, tokenizer=tokenizer, augmentor=augmentor)
     return dataset
 
 
