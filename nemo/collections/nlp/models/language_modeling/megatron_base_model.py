@@ -17,6 +17,7 @@ import itertools
 import os
 import re
 from dataclasses import fields
+from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
 import omegaconf
@@ -314,6 +315,11 @@ class MegatronBaseModel(NLPModel):
 
         # NVIDIA container version check
         nvidia_torch_version = os.getenv('NVIDIA_PYTORCH_VERSION', None)
+
+        # Support DLFW master container
+        if nvidia_torch_version == 'master':
+            nvidia_torch_version = datetime.now().strftime('%y.%m')
+
         if nvidia_torch_version is not None:
             try:
                 NVIDIA_TORCH_MAJOR = int(nvidia_torch_version.split('.')[0])
@@ -439,9 +445,10 @@ class MegatronBaseModel(NLPModel):
             attention_softmax_in_fp32 = True
 
         bias_activation_fusion = self.cfg.get('bias_activation_fusion', True)
-        bias_gelu_fusion = True if bias_activation_fusion else False
 
         bias_dropout_fusion = self.cfg.get('bias_dropout_add_fusion', True)
+
+        apply_rope_fusion = self.cfg.get('apply_rope_fusion', True)
 
         # TODO: need to check if recompute APIs are matching up properly
         recompute_granularity = self.cfg.get('activations_checkpoint_granularity', None)
@@ -460,8 +467,9 @@ class MegatronBaseModel(NLPModel):
             'init_method': init_method,
             'output_layer_init_method': output_layer_init_method,
             'attention_softmax_in_fp32': attention_softmax_in_fp32,
-            'bias_gelu_fusion': bias_gelu_fusion,
+            'bias_activation_fusion': bias_activation_fusion,
             'bias_dropout_fusion': bias_dropout_fusion,
+            'apply_rope_fusion': apply_rope_fusion,
             'recompute_granularity': recompute_granularity,
             'recompute_method': recompute_method,
             'recompute_num_layers': recompute_num_layers,
@@ -789,10 +797,11 @@ class MegatronBaseModel(NLPModel):
             overlap_params = []
             no_overlap_params = []
             for p in self.parameters():
-                if getattr(p, '_disable_overlap_grad_sync', False):
-                    no_overlap_params.append(p)
-                else:
-                    overlap_params.append(p)
+                if p.requires_grad:
+                    if getattr(p, '_disable_overlap_grad_sync', False):
+                        no_overlap_params.append(p)
+                    else:
+                        overlap_params.append(p)
             self._optimizer.init_params(reversed(overlap_params))
             self._optimizer.init_params(reversed(no_overlap_params))
 
