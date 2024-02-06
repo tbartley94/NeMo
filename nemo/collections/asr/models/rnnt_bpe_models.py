@@ -24,7 +24,7 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.losses.rnnt import RNNTLoss
-from nemo.collections.asr.metrics.wer import WER
+from nemo.collections.asr.metrics import BLEU, WER
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTBPEDecodingConfig
@@ -317,14 +317,24 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
 
-        # Setup wer object
-        self.wer = WER(
-            decoding=self.decoding,
-            batch_dim_index=0,
-            use_cer=self._cfg.get('use_cer', False),
-            log_prediction=self._cfg.get('log_prediction', True),
-            dist_sync_on_step=True,
-        )
+        # Setup metric with decoding strategy
+        if self.cfg.get("use_bleu", False):
+            self.wer = BLEU(
+                decoding=self.decoding,
+                batch_dim_index=0,
+                tokenize=self.cfg.get("bleu_tokenize", "13a"),
+                n_gram=self.cfg.get("bleu_ngram", 4),
+                log_prediction=self.cfg.get("log_prediction", False),
+                dist_sync_on_step=True,
+            )
+        else:
+            self.wer = WER(
+                decoding=self.decoding,
+                batch_dim_index=0,
+                use_cer=self.cfg.get('use_cer', False),
+                log_prediction=self.cfg.get("log_prediction", False),
+                dist_sync_on_step=True,
+            )
 
         # Setup fused Joint step if flag is set
         if self.joint.fuse_loss_wer:
@@ -414,13 +424,23 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
 
-        self.wer = WER(
-            decoding=self.decoding,
-            batch_dim_index=self.wer.batch_dim_index,
-            use_cer=self.wer.use_cer,
-            log_prediction=self.wer.log_prediction,
-            dist_sync_on_step=True,
-        )
+        if isinstance(self.wer, BLEU):
+            self.wer = BLEU(
+                decoding=self.decoding,
+                batch_dim_index=self.wer.batch_dim_index,
+                tokenize=self.wer.tokenize,
+                n_gram=self.wer.n_gram,
+                log_prediction=self.wer.log_prediction,
+                dist_sync_on_step=True,
+            )
+        else:
+            self.wer = WER(
+                decoding=self.decoding,
+                batch_dim_index=self.wer.batch_dim_index,
+                use_cer=self.wer.use_cer,
+                log_prediction=self.wer.log_prediction,
+                dist_sync_on_step=True,
+            )
 
         # Setup fused Joint step
         if self.joint.fuse_loss_wer or (
@@ -470,13 +490,23 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
 
-        self.wer = WER(
-            decoding=self.decoding,
-            batch_dim_index=self.wer.batch_dim_index,
-            use_cer=self.wer.use_cer,
-            log_prediction=self.wer.log_prediction,
-            dist_sync_on_step=True,
-        )
+        if isinstance(self.wer, BLEU):
+            self.wer = BLEU(
+                decoding=self.decoding,
+                batch_dim_index=self.wer.batch_dim_index,
+                tokenize=self.wer.tokenize,
+                n_gram=self.wer.n_gram,
+                log_prediction=self.wer.log_prediction,
+                dist_sync_on_step=True,
+            )
+        else:
+            self.wer = WER(
+                decoding=self.decoding,
+                batch_dim_index=self.wer.batch_dim_index,
+                use_cer=self.wer.use_cer,
+                log_prediction=self.wer.log_prediction,
+                dist_sync_on_step=True,
+            )
 
         # Setup fused Joint step
         if self.joint.fuse_loss_wer or (

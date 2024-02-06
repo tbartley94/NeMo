@@ -43,7 +43,10 @@ class BLEU(SacreBLEUScore):
         lowercase: bool = False,
         weights: Optional[Sequence[float]] = None,
         smooth: bool = False,
+<<<<<<< HEAD
         fold_consecutive=True,
+=======
+>>>>>>> 21ec861b9f9f0094a69a1b06da71cac8b2f4495e
         log_prediction=True,
         batch_dim_index=0,
         dist_sync_on_step=False,
@@ -56,10 +59,13 @@ class BLEU(SacreBLEUScore):
             smooth=smooth,
             dist_sync_on_step=dist_sync_on_step,
         )
+<<<<<<< HEAD
         self.tokenize = tokenize
         self.log_prediction = log_prediction
         self.batch_dim_index = batch_dim_index
         self.fold_consecutive = fold_consecutive
+=======
+>>>>>>> 21ec861b9f9f0094a69a1b06da71cac8b2f4495e
 
         self.decoding = decoding
         self.decode = None
@@ -71,12 +77,22 @@ class BLEU(SacreBLEUScore):
             self.decode = lambda predictions, predictions_lengths: self.decoding.ctc_decoder_predictions_tensor(
                 decoder_outputs=predictions,
                 decoder_lengths=predictions_lengths,
+<<<<<<< HEAD
                 fold_consecutive=fold_consecutive,
+=======
+                fold_consecutive=self.fold_consecutive,
+>>>>>>> 21ec861b9f9f0094a69a1b06da71cac8b2f4495e
             )
         else:
             raise TypeError(f"WER metric does not support decoding of type {type(self.decoding)}")
 
+<<<<<<< HEAD
 
+=======
+        self.tokenize = tokenize
+        self.log_prediction = log_prediction
+        self.batch_dim_index = batch_dim_index
+>>>>>>> 21ec861b9f9f0094a69a1b06da71cac8b2f4495e
 
     def update(
         self,
