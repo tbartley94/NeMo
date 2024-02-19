@@ -262,6 +262,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             raise NotImplementedError(f"Confidence calculation is not supported for strategy `{self.cfg.strategy}`")
 
         if self.cfg.strategy == 'greedy':
+            print("duration is", self.durations)
             if self.big_blank_durations is None or self.big_blank_durations == []:
                 if self.durations is None or self.durations == []:
                     self.decoding = rnnt_greedy_decoding.GreedyRNNTInfer(
