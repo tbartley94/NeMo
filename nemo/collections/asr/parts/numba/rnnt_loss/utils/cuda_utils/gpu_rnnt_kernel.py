@@ -1337,7 +1337,7 @@ def compute_tdt_grad_kernel(
             if t + durations[idx] < T and durations[idx] > 0:  # for blank in the middle
                 grad -= math.exp(alphas[col] + betas[col + durations[idx] * maxU] + logpk_blank - logll[mb])
 
-            if t + durations[idx] == T and idx >= 1 and u == U - 1 and durations[idx] > 0:  # for blank as the last symbol
+            if t + durations[idx] == T and u == U - 1 and durations[idx] > 0:  # for blank as the last symbol
                 grad -= math.exp(alphas[col] + logpk_blank - logll[mb])
 
             grad = grad * math.exp(duration_acts[col * num_durations + idx])
@@ -1399,7 +1399,7 @@ def compute_tdt_grad_kernel(
             # grad[b, t<T-1, u, v=blank] -= exp(alphas[b, t, u] + logpk - sigma + logp_duration - logll[b] + betas[b, t + duration, u]) for all non-zero durations
             if idx == blank_:
                 for i in range(0, num_durations):
-                    if durations[u] == 0:
+                    if durations[i] == 0:
                         continue
                     if t < T - durations[i]:
                         grad -= math.exp(

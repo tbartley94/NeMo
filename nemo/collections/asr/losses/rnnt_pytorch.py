@@ -210,7 +210,7 @@ class TDTLossPytorch(Loss):
                         # u != 0 here, need to consider both blanks and non-blanks.
                         log_alpha[b, t, u] = -1000.0
                         for n, l in enumerate(self.durations):
-                            if t - l >= 0:
+                            if t - l >= 0 and l > 0:
                                 if l > 0:  # for blank emissions. Need to ensure index is not out-of-bound.
                                     tmp = (
                                         log_alpha[b, t - l, u]
