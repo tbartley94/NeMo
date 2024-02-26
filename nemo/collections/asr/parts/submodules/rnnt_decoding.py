@@ -278,19 +278,33 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         confidence_method_cfg=self.confidence_method_cfg,
                     )
                 else:
-                    self.decoding = rnnt_greedy_decoding.GreedyTDTInfer(
-                        decoder_model=decoder,
-                        joint_model=joint,
-                        blank_index=self.blank_id,
-                        durations=self.durations,
-                        max_symbols_per_step=(
-                            self.cfg.greedy.get('max_symbols', None)
-                            or self.cfg.greedy.get('max_symbols_per_step', None)
-                        ),
-                        preserve_alignments=self.preserve_alignments,
-                        preserve_frame_confidence=self.preserve_frame_confidence,
-                        confidence_method_cfg=self.confidence_method_cfg,
-                    )
+                    if decoder is not None:
+                        self.decoding = rnnt_greedy_decoding.GreedyTDTInfer(
+                            decoder_model=decoder,
+                            joint_model=joint,
+                            blank_index=self.blank_id,
+                            durations=self.durations,
+                            max_symbols_per_step=(
+                                self.cfg.greedy.get('max_symbols', None)
+                                or self.cfg.greedy.get('max_symbols_per_step', None)
+                            ),
+                            preserve_alignments=self.preserve_alignments,
+                            preserve_frame_confidence=self.preserve_frame_confidence,
+                            confidence_method_cfg=self.confidence_method_cfg,
+                        )
+                    else:
+                        self.decoding = rnnt_greedy_decoding.GreedyHainanInfer(
+                            joint_model=joint,
+                            blank_index=self.blank_id,
+                            durations=self.durations,
+                            max_symbols_per_step=(
+                                self.cfg.greedy.get('max_symbols', None)
+                                or self.cfg.greedy.get('max_symbols_per_step', None)
+                            ),
+                            preserve_alignments=self.preserve_alignments,
+                            preserve_frame_confidence=self.preserve_frame_confidence,
+                            confidence_method_cfg=self.confidence_method_cfg,
+                        )
             else:
                 self.decoding = rnnt_greedy_decoding.GreedyMultiblankRNNTInfer(
                     decoder_model=decoder,

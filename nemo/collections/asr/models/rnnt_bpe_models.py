@@ -301,8 +301,9 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         with open_dict(cfg):
             cfg.labels = ListConfig(list(vocabulary))
 
-        with open_dict(cfg.decoder):
-            cfg.decoder.vocab_size = len(vocabulary)
+        if cfg.loss.loss_name != 'hainan':
+            with open_dict(cfg.decoder):
+                cfg.decoder.vocab_size = len(vocabulary)
 
         with open_dict(cfg.joint):
             cfg.joint.num_classes = len(vocabulary)
