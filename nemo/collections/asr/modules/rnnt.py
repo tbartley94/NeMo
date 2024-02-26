@@ -1870,7 +1870,7 @@ class HainanJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixi
         layers = (
             [activation]
             + ([torch.nn.Dropout(p=dropout)] if dropout else [])
-            + [torch.nn.Linear(joint_n_hidden, num_classes)]
+            + [torch.nn.Linear(enc_n_hidden, num_classes)]
         )
         return torch.nn.Sequential(*layers)
 

@@ -961,7 +961,9 @@ def compute_tdt_alphas_kernel(
             if t > 0 and t < T:
                 alphas[offset + t * maxU + u] = -INF
 
-                for i in range(1, num_durations):  # skip 0 since blank emission has to advance by at least one
+                for i in range(0, num_durations):
+                    if durations[i] == 0:  # skip 0 since blank emission has to advance by at least one
+                        continue                                            
                     if t >= durations[i]:
                         alphas[offset + t * maxU + u] = rnnt_helper.log_sum_exp(
                             alphas[offset + t * maxU + u],  # the current alpha value
@@ -987,15 +989,18 @@ def compute_tdt_alphas_kernel(
                         denom, acts, maxT, maxU, alphabet_size, b, t, u - 1, labels[u - 1]
                     )  # logp of token emission
                     - sigma  # logit under-normalization
-                    + logp_duration(
-                        duration_acts, maxT, maxU, num_durations, b, t, u - 1, 0
-                    )  # t = 0, so it must be duration = 0. Therefore the last argument passed to logp_duration() is 0.
+                    - INF # duration = 0 is forbidden, inifite cost here
+#                    logp_duration(
+#                        duration_acts, maxT, maxU, num_durations, b, t, u - 1, 0
+#                    )  # t = 0, so it must be duration = 0. Therefore the last argument passed to logp_duration() is 0.
                 )
 
             # now we have t != 0 and u != 0, and we need to consider both non-blank and blank emissions.
             elif t > 0 and t < T:
                 no_emit = -INF  # no_emit stores the score for all blank emissions.
-                for i in range(1, num_durations):
+                for i in range(0, num_durations):
+                    if durations[i] == 0:
+                        continue
                     if t >= durations[i]:
                         no_emit = rnnt_helper.log_sum_exp(
                             no_emit,  # current score
@@ -1013,6 +1018,8 @@ def compute_tdt_alphas_kernel(
 
                 emit = -INF  # emit stores the score for non-blank emissions.
                 for i in range(0, num_durations):
+                    if durations[i] == 0:
+                        continue
                     if t >= durations[i]:
                         emit = rnnt_helper.log_sum_exp(
                             emit,  # current score
@@ -1038,15 +1045,20 @@ def compute_tdt_alphas_kernel(
     # alpha(T - duration, U - 1) + logp(blank, duration | t - duration, U - 1), over different durations.
     if u == 0:
         # first we consider duration = 1
-        loglike = (
-            alphas[offset + (T - 1) * maxU + U - 1]
-            + logp(denom, acts, maxT, maxU, alphabet_size, b, T - 1, U - 1, blank_)
-            - sigma
-            + logp_duration(duration_acts, maxT, maxU, num_durations, b, T - 1, U - 1, 1)
-        )
+        loglike = -INF
 
         # then we add the scores for duration > 1, if such durations are possible given the audio lengths.
-        for i in range(2, num_durations):
+        for i in range(0, num_durations):
+            if durations[i] == 0:
+                continue
+            if durations[i] == 1:
+                loglike = (
+                    alphas[offset + (T - 1) * maxU + U - 1]
+                    + logp(denom, acts, maxT, maxU, alphabet_size, b, T - 1, U - 1, blank_)
+                    - sigma
+                    + logp_duration(duration_acts, maxT, maxU, num_durations, b, T - 1, U - 1, i)
+                )
+                continue
             if T >= durations[i]:
                 big_blank_loglike = (
                     alphas[offset + (T - durations[i]) * maxU + U - 1]
@@ -1059,6 +1071,8 @@ def compute_tdt_alphas_kernel(
                 break
 
         llForward[b] = loglike
+#        print('forward is', loglike)
+
 
 
 @cuda.jit()
@@ -1122,11 +1136,18 @@ def compute_tdt_betas_kernel(
 
     # Initilize beta[b, t=T-1, u=U-1] for all b in B with log_probs[b, t=T-1, u=U-1, blank]
     if u == 0:
-        betas[offset + (T - 1) * maxU + U - 1] = (
-            logp(denom, acts, maxT, maxU, alphabet_size, b, T - 1, U - 1, blank_)
-            - sigma
-            + logp_duration(duration_acts, maxT, maxU, num_durations, b, T - 1, U - 1, 1)
-        )
+        if durations[1] == 1:
+            betas[offset + (T - 1) * maxU + U - 1] = (
+                logp(denom, acts, maxT, maxU, alphabet_size, b, T - 1, U - 1, blank_)
+                - sigma
+                + logp_duration(duration_acts, maxT, maxU, num_durations, b, T - 1, U - 1, 1)
+            )
+        elif durations[0] == 1:
+            betas[offset + (T - 1) * maxU + U - 1] = (
+                logp(denom, acts, maxT, maxU, alphabet_size, b, T - 1, U - 1, blank_)
+                - sigma
+                + logp_duration(duration_acts, maxT, maxU, num_durations, b, T - 1, U - 1, 0)
+            )
 
     # sync until all betas are initialized
     cuda.syncthreads()
@@ -1140,11 +1161,12 @@ def compute_tdt_betas_kernel(
             # u == U - 1, we only consider blank emissions.
             if t >= 0 and t + 1 < T:
                 betas[offset + t * maxU + U - 1] = -INF
-                for i in range(1, num_durations):
+                for i in range(0, num_durations):
                     # although similar, the computation for beta's is slightly more complex for boundary cases.
                     # the following two cases correspond to whether t is exactly certain duration away from T.
                     # and they have slightly different update rules.
-
+                    if durations[i] == 0:
+                        continue
                     if t + durations[i] < T:
                         betas[offset + t * maxU + U - 1] = rnnt_helper.log_sum_exp(
                             betas[offset + t * maxU + U - 1],
@@ -1172,17 +1194,22 @@ def compute_tdt_betas_kernel(
         elif u < U - 1:
             if t == T - 1:
                 # t == T - 1, so we only consider non-blank with duration 0. (Note, we can't have blank emissions with duration = 0)
-                betas[offset + (T - 1) * maxU + u] = (
-                    betas[offset + (T - 1) * maxU + u + 1]
-                    + logp(denom, acts, maxT, maxU, alphabet_size, b, T - 1, u, labels[u])  # non-blank log prob
-                    + logp_duration(duration_acts, maxT, maxU, num_durations, b, T - 1, u, 0)  # log prob of duration 0
-                    - sigma
-                )
+                if durations[0] == 0:
+                    betas[offset + (T - 1) * maxU + u] = (
+                        betas[offset + (T - 1) * maxU + u + 1]
+                        + logp(denom, acts, maxT, maxU, alphabet_size, b, T - 1, u, labels[u])  # non-blank log prob
+                        + logp_duration(duration_acts, maxT, maxU, num_durations, b, T - 1, u, 0)  # log prob of duration 0
+                        - sigma
+                    )
+                else:
+                    betas[offset + (T - 1) * maxU + u] = -INF
 
             elif t >= 0 and t < T - 1:
                 # now we need to consider both blank andnon-blanks. Similar to alphas, we first compute them separately with no_emit and emit.
                 no_emit = -INF
-                for i in range(1, num_durations):
+                for i in range(0, num_durations):
+                    if durations[0] == 0:
+                        continue
                     if t + durations[i] < T:
                         no_emit = rnnt_helper.log_sum_exp(
                             no_emit,
@@ -1194,6 +1221,8 @@ def compute_tdt_betas_kernel(
 
                 emit = -INF
                 for i in range(0, num_durations):
+                    if durations[0] == 0:
+                        continue
                     if t + durations[i] < T:
                         emit = rnnt_helper.log_sum_exp(
                             emit,
@@ -1212,6 +1241,7 @@ def compute_tdt_betas_kernel(
     # After final sync, betas[b, 0, 0] gives log-likelihood of backward pass, same with conventional Transducers.
     if u == 0:
         llBackward[b] = betas[offset]
+#        print("backward is", betas[offset])
 
 
 @cuda.jit()
@@ -1300,14 +1330,14 @@ def compute_tdt_grad_kernel(
 
         if idx < num_durations:
             grad = 0.0
-            if t + durations[idx] < T and u < U - 1:  # for label
+            if t + durations[idx] < T and u < U - 1 and durations[idx] > 0:  # for label
                 logpk_label = denom[col] + acts[col * alphabet_size + labels[u]] - sigma
                 grad -= math.exp(alphas[col] + betas[col + 1 + durations[idx] * maxU] + logpk_label - logll[mb])
 
-            if t + durations[idx] < T and idx > 0:  # for blank in the middle
+            if t + durations[idx] < T and durations[idx] > 0:  # for blank in the middle
                 grad -= math.exp(alphas[col] + betas[col + durations[idx] * maxU] + logpk_blank - logll[mb])
 
-            if t + durations[idx] == T and idx >= 1 and u == U - 1:  # for blank as the last symbol
+            if t + durations[idx] == T and idx >= 1 and u == U - 1 and durations[idx] > 0:  # for blank as the last symbol
                 grad -= math.exp(alphas[col] + logpk_blank - logll[mb])
 
             grad = grad * math.exp(duration_acts[col * num_durations + idx])
@@ -1336,6 +1366,8 @@ def compute_tdt_grad_kernel(
                 fastemit_grad = 0.0
 
                 for i in range(0, num_durations):
+                    if durations[i] == 0:
+                        continue
                     if t + durations[i] < T:
                         fastemit_grad += fastemit_lambda * math.exp(
                             alphas[col]  # alphas(t, u)
@@ -1355,7 +1387,9 @@ def compute_tdt_grad_kernel(
             # grad to last blank transition
             # grad[b, T-1, U-1, v=blank] -= exp(alphas[b, t, u] + logpk - sigma - logll[b] + logp(duration) for all possible non-zero durations.
             if idx == blank_ and u == U - 1:
-                for i in range(1, num_durations):
+                for i in range(0, num_durations):
+                    if durations[i] == 0:
+                        continue
                     if t == T - durations[i]:
                         grad -= math.exp(
                             alphas[col] + logpk - sigma - logll[mb] + duration_acts[col * num_durations + i]
@@ -1364,7 +1398,9 @@ def compute_tdt_grad_kernel(
             # grad of blank across t < T;
             # grad[b, t<T-1, u, v=blank] -= exp(alphas[b, t, u] + logpk - sigma + logp_duration - logll[b] + betas[b, t + duration, u]) for all non-zero durations
             if idx == blank_:
-                for i in range(1, num_durations):
+                for i in range(0, num_durations):
+                    if durations[u] == 0:
+                        continue
                     if t < T - durations[i]:
                         grad -= math.exp(
                             alphas[col]
@@ -1382,6 +1418,8 @@ def compute_tdt_grad_kernel(
                 # exp(log(1 + fastemit_lambda) + ...) is numerically more stable than
                 # multiplying (1.0 + fastemit_lambda) with result.
                 for i in range(num_durations):
+                    if durations[i] == 0:
+                        continue
                     if t + durations[i] < T:
                         grad -= math.exp(
                             math.log1p(fastemit_lambda)

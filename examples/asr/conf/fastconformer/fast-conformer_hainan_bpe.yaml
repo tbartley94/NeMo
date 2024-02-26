@@ -13,8 +13,8 @@ model:
     joint_hidden: 640
 
     # variables for TDT configs.
-    tdt_durations: [0, 1, 2, 3, 4]
-    num_tdt_durations: 5
+    tdt_durations: [1, 2, 3, 4]
+    num_tdt_durations: 4
 
   train_ds:
     manifest_filepath: ???

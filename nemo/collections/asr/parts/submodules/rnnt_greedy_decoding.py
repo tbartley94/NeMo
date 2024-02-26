@@ -2929,6 +2929,7 @@ class GreedyHainanInfer(_GreedyRNNTInfer):
         while t < T:
             k = tokens[t]
             duration = self.durations[durations[t]]
+            assert(duration != 0)
             if k != self._blank_index:
                 hypothesis.y_sequence.append(k)
             t = t + duration 
