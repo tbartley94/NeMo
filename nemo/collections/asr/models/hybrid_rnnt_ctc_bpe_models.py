@@ -316,7 +316,6 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         elif loss_name == 'multiblank_rnnt':
             decoding_cfg.big_blank_durations = loss_kwargs.big_blank_durations
 
-        print("HERE decoding_cfg.durations", decoding_cfg.durations)
         self.decoding = RNNTBPEDecoding(
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
