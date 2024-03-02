@@ -25,7 +25,7 @@ from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.losses.rnnt import RNNTLoss
-from nemo.collections.asr.metrics.wer import WER
+from nemo.collections.asr.metrics import WER, BLEU
 from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
@@ -97,13 +97,19 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         )
 
         # Setup wer object
-        self.wer = WER(
-            decoding=self.decoding,
-            batch_dim_index=0,
-            use_cer=self.cfg.get('use_cer', False),
-            log_prediction=self.cfg.get('log_prediction', True),
-            dist_sync_on_step=True,
-        )
+        self.wer, self.bleu = None, None
+        if cfg.get("use_bleu"):
+            self.bleu = BLEU(
+                self.decoding, batch_dim_index=0, tokenize=self.cfg.get('bleu_tokenizer', "13a"), log_prediction=self.cfg.get('log_prediction', True), dist_sync_on_step=True
+        )  # Wer is handling logging
+        else:
+            self.wer = WER(
+                decoding=self.decoding,
+                batch_dim_index=0,
+                use_cer=self.cfg.get('use_cer', False),
+                log_prediction=self.cfg.get('log_prediction', True),
+                dist_sync_on_step=True,
+            )
 
         # Setup fused Joint step if flag is set
         if self.joint.fuse_loss_wer:
@@ -119,12 +125,18 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer)
 
         # Setup CTC WER
-        self.ctc_wer = WER(
-            decoding=self.ctc_decoding,
-            use_cer=self.cfg.aux_ctc.get('use_cer', False),
-            dist_sync_on_step=True,
-            log_prediction=self.cfg.get("log_prediction", False),
-        )
+        self.ctc_bleu, self.ctc_wer = None, None
+        if cfg.get("use_bleu"):
+            self.ctc_bleu = BLEU(
+                self.ctc_decoding, tokenize=self.cfg.get('bleu_tokenizer', "13a"), log_prediction=False, dist_sync_on_step=True
+        ) # Wer is handling logging
+        else:
+            self.ctc_wer = WER(
+                decoding=self.ctc_decoding,
+                use_cer=self.cfg.aux_ctc.get('use_cer', False),
+                dist_sync_on_step=True,
+                log_prediction=self.cfg.get("log_prediction", False),
+            )
 
         # setting the RNNT decoder as the default one
         self.cur_decoder = "rnnt"

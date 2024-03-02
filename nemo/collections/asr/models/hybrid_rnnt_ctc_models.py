@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
-from nemo.collections.asr.metrics.wer import WER
+from nemo.collections.asr.metrics import WER, BLEU
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin, InterCTCMixin, TranscribeConfig
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
@@ -79,6 +79,12 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 self.cfg.aux_ctc.decoding = ctc_decoding_cfg
 
         self.ctc_decoding = CTCDecoding(self.cfg.aux_ctc.decoding, vocabulary=self.ctc_decoder.vocabulary)
+        self.ctc_bleu = BLEU(
+            decoding=self.ctc_decoding,
+            use_cer=self.cfg.aux_ctc.get('use_cer', False),
+            dist_sync_on_step=True,
+            log_prediction=self.cfg.get("log_prediction", False),
+        ) if cfg.get("use_bleu") else None
         self.ctc_wer = WER(
             decoding=self.ctc_decoding,
             use_cer=self.cfg.aux_ctc.get('use_cer', False),
@@ -521,6 +527,16 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             tensorboard_logs['val_wer_denom'] = wer_denom
             tensorboard_logs['val_wer'] = wer
 
+            if self.bleu:
+                self.bleu.update(
+                predictions=encoded,
+                predictions_lengths=encoded_len,
+                targets=transcript,
+                targets_lengths=transcript_len,
+            )
+                tensorboard_logs.update(self.bleu.compute(prefix="val_"))
+                self.bleu.reset()
+
         else:
             # If experimental fused Joint-Loss-WER is used
             compute_wer = True
@@ -547,6 +563,16 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             tensorboard_logs['val_wer_denom'] = wer_denom
             tensorboard_logs['val_wer'] = wer
 
+            if self.bleu:
+                self.bleu.update(
+                predictions=encoded,
+                predictions_lengths=encoded_len,
+                targets=transcript,
+                targets_lengths=transcript_len,
+            )
+                tensorboard_logs.update(self.bleu.compute(prefix="val_"))
+                self.bleu.reset()
+
         log_probs = self.ctc_decoder(encoder_output=encoded)
         if self.compute_eval_loss:
             ctc_loss = self.ctc_loss(
@@ -564,6 +590,16 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         tensorboard_logs['val_wer_num_ctc'] = ctc_wer_num
         tensorboard_logs['val_wer_denom_ctc'] = ctc_wer_denom
         tensorboard_logs['val_wer_ctc'] = ctc_wer
+
+        if self.ctc_bleu:
+            self.ctc_bleu.update(
+            predictions=encoded,
+            predictions_lengths=encoded_len,
+            targets=transcript,
+            targets_lengths=transcript_len,
+        )
+            tensorboard_logs.update(self.bleu.compute(prefix="val_", suffix="_ctc"))
+            self.bleu.reset()
 
         self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
@@ -614,10 +650,28 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         wer_num = torch.stack([x['val_wer_num'] for x in outputs]).sum()
         wer_denom = torch.stack([x['val_wer_denom'] for x in outputs]).sum()
         tensorboard_logs = {**val_loss_log, 'val_wer': wer_num.float() / wer_denom}
+
+        if "val_bleu_num" in outputs[0]:
+            bleu_pred_len = torch.stack([x[f"val_bleu_pred_len"] for x in outputs]).sum()
+            bleu_target_len = torch.stack([x[f"val_bleu_target_len"] for x in outputs]).sum()
+            bleu_num = torch.stack([x[f"val_bleu_num"] for x in outputs]).sum(dim=0)
+            bleu_denom = torch.stack([x[f"val_bleu_denom"] for x in outputs]).sum(dim=0)
+            val_bleu = {"val_bleu": self.bleu._compute_bleu(bleu_pred_len, bleu_target_len, bleu_num, bleu_denom)}
+            tensorboard_logs.update(val_bleu)
+
         if self.ctc_loss_weight > 0:
             ctc_wer_num = torch.stack([x['val_wer_num_ctc'] for x in outputs]).sum()
             ctc_wer_denom = torch.stack([x['val_wer_denom_ctc'] for x in outputs]).sum()
             tensorboard_logs['val_wer_ctc'] = ctc_wer_num.float() / ctc_wer_denom
+
+            if "val_bleu_num_ctc" in outputs[0]:
+                bleu_pred_len = torch.stack([x[f"val_bleu_pred_len_ctc"] for x in outputs]).sum()
+                bleu_target_len = torch.stack([x[f"val_bleu_target_len_ctc"] for x in outputs]).sum()
+                bleu_num = torch.stack([x[f"val_bleu_num_ctc"] for x in outputs]).sum(dim=0)
+                bleu_denom = torch.stack([x[f"val_bleu_denom_ctc"] for x in outputs]).sum(dim=0)
+                val_bleu = {"val_bleu_ctc": self.bleu._compute_bleu(bleu_pred_len, bleu_target_len, bleu_num, bleu_denom)}
+                tensorboard_logs.update(val_bleu)
+
         metrics = {**val_loss_log, 'log': tensorboard_logs}
         self.finalize_interctc_metrics(metrics, outputs, prefix="val_")
         return metrics
