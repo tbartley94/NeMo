@@ -81,7 +81,6 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         self.ctc_decoding = CTCDecoding(self.cfg.aux_ctc.decoding, vocabulary=self.ctc_decoder.vocabulary)
         self.ctc_bleu = BLEU(
             decoding=self.ctc_decoding,
-            use_cer=self.cfg.aux_ctc.get('use_cer', False),
             dist_sync_on_step=True,
             log_prediction=self.cfg.get("log_prediction", False),
         ) if cfg.get("use_bleu") else None
