@@ -1394,7 +1394,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 )
 
             losses = []
-            wers, wer_nums, wer_denoms = [], [], []
             target_lengths = []
             batch_size = int(encoder_outputs.size(0))  # actual batch size
 
@@ -1477,13 +1476,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                         targets=sub_transcripts,
                         targets_lengths=sub_transcript_lens,
                     )
-                    # Sync and all_reduce on all processes, compute global WER
-                    wer, wer_num, wer_denom = self.wer.compute()
-                    self.wer.reset()
-
-                    wers.append(wer)
-                    wer_nums.append(wer_num)
-                    wer_denoms.append(wer_denom)
 
                 del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 
@@ -1493,9 +1485,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
             # Collect sub batch wer results
             if compute_wer:
-                wer = sum(wers) / len(wers)
-                wer_num = sum(wer_nums)
-                wer_denom = sum(wer_denoms)
+                wer, wer_num, wer_denom = self.wer.compute()
+                self.wer.reset()
             else:
                 wer = None
                 wer_num = None
