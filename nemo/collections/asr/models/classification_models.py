@@ -41,7 +41,6 @@ from nemo.utils import logging, model_utils
 from nemo.utils.cast_utils import cast_all
 from dataclasses import field
 
-
 __all__ = ['EncDecClassificationModel', 'EncDecRegressionModel']
 
 
