@@ -1508,6 +1508,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         f = f.unsqueeze(dim=2)  # (B, T, 1, H)
         g = g.unsqueeze(dim=1)  # (B, 1, U, H)
+
+        if self.training:
+            [B, _, U, _] = g.shape
+            rand = torch.rand([B, 1, U, 1]).to(g.device)
+            rand = torch.gt(rand, 0.5)
+            g = g * rand
+
         inp = f + g  # [B, T, U, H]
 
         del f, g
