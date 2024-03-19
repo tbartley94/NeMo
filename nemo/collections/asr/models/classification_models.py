@@ -39,6 +39,7 @@ from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types import *
 from nemo.utils import logging, model_utils
 from nemo.utils.cast_utils import cast_all
+from dataclasses import field
 
 __all__ = ['EncDecClassificationModel', 'EncDecRegressionModel']
 
@@ -48,7 +49,7 @@ class ClassificationInferConfig:
     batch_size: int = 4
     logprobs: bool = False
 
-    _internal: InternalTranscribeConfig = InternalTranscribeConfig()
+    _internal: InternalTranscribeConfig = field(default_factory=lambda: InternalTranscribeConfig())
 
 
 @dataclass
@@ -56,7 +57,7 @@ class RegressionInferConfig:
     batch_size: int = 4
     logprobs: bool = True
 
-    _internal: InternalTranscribeConfig = InternalTranscribeConfig()
+    _internal: InternalTranscribeConfig = field(default_factory=lambda: InternalTranscribeConfig())
 
 
 class _EncDecBaseModel(ASRModel, ExportableEncDecModel, TranscriptionMixin):
