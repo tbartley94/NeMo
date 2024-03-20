@@ -50,12 +50,12 @@ try:
 except (ImportError, ModuleNotFoundError):
     WARP_RNNT_AVAILABLE = False
 
-try:
-    from nemo.collections.asr.parts.numba.rnnt_loss import MultiblankRNNTLossNumba, RNNTLossNumba, TDTLossNumba, HainanLossNumba
+#try:
+from nemo.collections.asr.parts.numba.rnnt_loss import MultiblankRNNTLossNumba, RNNTLossNumba, TDTLossNumba
 
-    NUMBA_RNNT_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    NUMBA_RNNT_AVAILABLE = False
+NUMBA_RNNT_AVAILABLE = True
+#except (ImportError, ModuleNotFoundError):
+#    NUMBA_RNNT_AVAILABLE = False
 
 try:
     from nemo.collections.asr.parts.k2.graph_transducer import GraphRnntLoss
@@ -141,13 +141,6 @@ RNNT_LOSS_RESOLVER = {
     ),
     "tdt": RNNTLossConfig(
         loss_name="tdt",
-        lib_name="numba",
-        min_version='0.53.0',
-        is_available=NUMBA_RNNT_AVAILABLE,
-        installation_msg=NUMBA_INSTALLATION_MESSAGE,
-    ),
-    "hainan": RNNTLossConfig(
-        loss_name="hainan",
         lib_name="numba",
         min_version='0.53.0',
         is_available=NUMBA_RNNT_AVAILABLE,
@@ -316,24 +309,6 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
             omega=omega,
         )
         _warn_unused_additional_kwargs(loss_name, loss_kwargs)
-
-    elif loss_name == 'hainan':
-        fastemit_lambda = loss_kwargs.pop('fastemit_lambda', 0.0)
-        clamp = loss_kwargs.pop('clamp', -1.0)
-        durations = loss_kwargs.pop('durations', None)
-        sigma = loss_kwargs.pop('sigma', 0.0)
-        omega = loss_kwargs.pop('omega', 0.0)
-        loss_func = HainanLossNumba(  # TODO(hainan) to change
-            blank=blank_idx,
-            durations=durations,
-            reduction='none',
-            fastemit_lambda=fastemit_lambda,
-            clamp=clamp,
-            sigma=sigma,
-            omega=omega,
-        )
-        _warn_unused_additional_kwargs(loss_name, loss_kwargs)
-
 
     elif loss_name == 'tdt_pytorch':
         durations = loss_kwargs.pop('durations', None)

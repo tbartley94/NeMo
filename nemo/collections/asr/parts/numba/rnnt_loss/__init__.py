@@ -17,5 +17,4 @@ from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_pytorch import (
     MultiblankRNNTLossNumba,
     RNNTLossNumba,
     TDTLossNumba,
-    HainanLossNumba,
 )

@@ -58,17 +58,14 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             self.world_size = trainer.world_size
 
         super().__init__(cfg=cfg, trainer=trainer)
-        # Setup RNNT Loss
-        loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
 
         # Initialize components
         self.preprocessor = EncDecRNNTModel.from_config_dict(self.cfg.preprocessor)
         self.encoder = EncDecRNNTModel.from_config_dict(self.cfg.encoder)
 
         # Update config values required by components dynamically
-        if loss_name != 'hainan':
-            with open_dict(self.cfg.decoder):
-                self.cfg.decoder.vocab_size = len(self.cfg.labels)
+        with open_dict(self.cfg.decoder):
+            self.cfg.decoder.vocab_size = len(self.cfg.labels)
 
         with open_dict(self.cfg.joint):
             self.cfg.joint.num_classes = len(self.cfg.labels)
@@ -76,23 +73,16 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             self.cfg.joint.jointnet.encoder_hidden = self.cfg.model_defaults.enc_hidden
             self.cfg.joint.jointnet.pred_hidden = self.cfg.model_defaults.pred_hidden
 
-        if loss_name != 'hainan':
-            self.decoder = EncDecRNNTModel.from_config_dict(self.cfg.decoder)
-        else:
-            self.decoder = None
+        self.decoder = EncDecRNNTModel.from_config_dict(self.cfg.decoder)
         self.joint = EncDecRNNTModel.from_config_dict(self.cfg.joint)
 
+        # Setup RNNT Loss
+        loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
 
         num_classes = self.joint.num_classes_with_blank - 1  # for standard RNNT and multi-blank
 
         if loss_name == 'tdt':
             num_classes = num_classes - self.joint.num_extra_outputs
-            self.cfg.decoding.durations = loss_kwargs.durations
-        elif loss_name == 'hainan':
-            num_classes = num_classes - self.joint.num_extra_outputs
-            self.cfg.decoding.durations = loss_kwargs.durations
-        elif loss_name == 'multiblank_rnnt':
-            self.cfg.decoding.big_blank_durations = loss_kwargs.big_blank_durations
 
         self.loss = RNNTLoss(
             num_classes=num_classes,
@@ -323,12 +313,11 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             del self.joint
             self.joint = EncDecRNNTModel.from_config_dict(new_joint_config)
 
-            if self.decoder is not None:
-                decoder_config = self.decoder.to_config_dict()
-                new_decoder_config = copy.deepcopy(decoder_config)
-                new_decoder_config.vocab_size = len(new_vocabulary)
-                del self.decoder
-                self.decoder = EncDecRNNTModel.from_config_dict(new_decoder_config)
+            decoder_config = self.decoder.to_config_dict()
+            new_decoder_config = copy.deepcopy(decoder_config)
+            new_decoder_config.vocab_size = len(new_vocabulary)
+            del self.decoder
+            self.decoder = EncDecRNNTModel.from_config_dict(new_decoder_config)
 
             del self.loss
             loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get('loss', None))
@@ -668,10 +657,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         del signal
 
         # During training, loss must be computed, so decoder forward is necessary
-        if self.decoder is not None:
-            decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-#            print('transcript_len is', transcript_len)
-#            print('target_length  is', target_length)
+        decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
@@ -683,15 +669,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
             # Compute full joint and loss
-            if self.decoder is not None:
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            else:
-                maxU = transcript_len.max()
-                joint = self.joint(encoder_outputs=encoded)
-                joint = joint.repeat([1, 1, 1 + maxU, 1])
+            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
 
             loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
+                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
             )
 
             # Add auxiliary losses, if registered
@@ -793,11 +774,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
-                if self.decoder is not None:
-                    decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                    joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-                else:
-                    joint = self.joint(encoder_outputs=encoded)
+                decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
+                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
 
                 loss_value = self.loss(
                     log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length

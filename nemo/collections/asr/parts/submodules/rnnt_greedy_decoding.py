@@ -2411,37 +2411,26 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             packed list containing batch number of sentences (Hypotheses).
         """
         # Preserve decoder and joint training state
-        decoder_training_state = self.decoder.training if self.decoder is not None else False
+        decoder_training_state = self.decoder.training
         joint_training_state = self.joint.training
 
         with torch.inference_mode():
             # Apply optional preprocessing
             encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
 
-            if self.decoder is not None:
-                self.decoder.eval()
+            self.decoder.eval()
             self.joint.eval()
 
             hypotheses = []
             # Process each sequence independently
-            if self.decoder is not None:
-                with self.decoder.as_frozen(), self.joint.as_frozen():
-                    for batch_idx in range(encoder_output.size(0)):
-                        inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
-                        logitlen = encoded_lengths[batch_idx]
+            with self.decoder.as_frozen(), self.joint.as_frozen():
+                for batch_idx in range(encoder_output.size(0)):
+                    inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
+                    logitlen = encoded_lengths[batch_idx]
 
-                        partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                        hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
-                        hypotheses.append(hypothesis)
-            else:
-                with self.joint.as_frozen():
-                    for batch_idx in range(encoder_output.size(0)):
-                        inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
-                        logitlen = encoded_lengths[batch_idx]
-
-                        partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                        hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
-                        hypotheses.append(hypothesis)
+                    partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
+                    hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
+                    hypotheses.append(hypothesis)
 
             # Pack results into Hypotheses
             packed_result = pack_hypotheses(hypotheses, encoded_lengths)
@@ -2753,188 +2742,4 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
             hyp.dec_state = state
         return hyps
 
-
-class GreedyHainanInfer(_GreedyRNNTInfer):
-    """A greedy TDT decoder.
-
-    Sequence level greedy decoding, performed auto-regressively.
-
-    Args:
-        decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
-        joint_model: rnnt_utils.AbstractRNNTJoint implementation.
-        blank_index: int index of the blank token. Must be len(vocabulary) for TDT models.
-        durations: a list containing durations for TDT.
-        max_symbols_per_step: Optional int. The maximum number of symbols that can be added
-            to a sequence in a single time step; if set to None then there is
-            no limit.
-        preserve_alignments: Bool flag which preserves the history of alignments generated during
-            greedy decoding (sample / batched). When set to true, the Hypothesis will contain
-            the non-null value for `alignments` in it. Here, `alignments` is a List of List of
-            Tuple(Tensor (of length V + 1 + num-big-blanks), Tensor(scalar, label after argmax)).
-            The length of the list corresponds to the Acoustic Length (T).
-            Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
-            U is the number of target tokens for the current timestep Ti.
-        preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores generated
-            during greedy decoding (sample / batched). When set to true, the Hypothesis will contain
-            the non-null value for `frame_confidence` in it. Here, `frame_confidence` is a List of List of floats.
-            The length of the list corresponds to the Acoustic Length (T).
-            Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
-            U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
-            confidence scores.
-
-            name: The method name (str).
-                Supported values:
-                    - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
-
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
-                Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
-                        the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the alpha should comply the following inequality:
-                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
-                        where V is the model vocabulary size.
-                    - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
-                        Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
-                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
-                        More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renyi' for the Rényi entropy.
-                        Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
-                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
-                        More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
-
-            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the alpha equals one, scaling is not applied to 'max_prob',
-                and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
-
-            entropy_norm: A mapping of the entropy value to the interval [0,1].
-                Supported values:
-                    - 'lin' for using the linear mapping.
-                    - 'exp' for using exponential mapping with linear shift.
-    """
-
-    def __init__(
-        self,
-        joint_model: rnnt_abstract.AbstractRNNTJoint,
-        blank_index: int,
-        durations: list,
-        max_symbols_per_step: Optional[int] = None,
-        preserve_alignments: bool = False,
-        preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
-    ):
-        super().__init__(
-            decoder_model=None,
-            joint_model=joint_model,
-            blank_index=blank_index,
-            max_symbols_per_step=max_symbols_per_step,
-            preserve_alignments=preserve_alignments,
-            preserve_frame_confidence=preserve_frame_confidence,
-            confidence_method_cfg=confidence_method_cfg,
-        )
-        self.durations = durations
-
-    def _pred_step(
-        self,
-        label: Union[torch.Tensor, int],
-        hidden: Optional[torch.Tensor],
-        add_sos: bool = False,
-        batch_size: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return None
-
-    @typecheck()
-    def forward(
-        self,
-        encoder_output: torch.Tensor,
-        encoded_lengths: torch.Tensor,
-        partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
-    ):
-        """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
-        Output token is generated auto-regressively.
-        Args:
-            encoder_output: A tensor of size (batch, features, timesteps).
-            encoded_lengths: list of int representing the length of each sequence
-                output sequence.
-        Returns:
-            packed list containing batch number of sentences (Hypotheses).
-        """
-        # Preserve decoder and joint training state
-        decoder_training_state = self.decoder.training if self.decoder is not None else False
-        joint_training_state = self.joint.training
-
-        with torch.inference_mode():
-            # Apply optional preprocessing
-            encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
-
-            if self.decoder is not None:
-                self.decoder.eval()
-            self.joint.eval()
-
-            hypotheses = []
-            # Process each sequence independently
-            if self.decoder is not None:
-                with self.decoder.as_frozen(), self.joint.as_frozen():
-                    for batch_idx in range(encoder_output.size(0)):
-                        inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
-                        logitlen = encoded_lengths[batch_idx]
-
-                        partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                        hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
-                        hypotheses.append(hypothesis)
-            else:
-                with self.joint.as_frozen():
-                    for batch_idx in range(encoder_output.size(0)):
-                        inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
-                        logitlen = encoded_lengths[batch_idx]
-
-                        partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                        hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
-                        hypotheses.append(hypothesis)
-
-            # Pack results into Hypotheses
-            packed_result = pack_hypotheses(hypotheses, encoded_lengths)
-
-        self.joint.train(joint_training_state)
-
-        return (packed_result,)
-
-    @torch.no_grad()
-    def _greedy_decode(
-        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
-    ):
-        # x: [T, 1, D]
-        # out_len: [seq_len]
-
-        x = x.transpose(1, 2)
-        T = x.shape[0]
-#        print("before x is", x.shape)
-#        print("joint", self.joint)
-
-        joined = self.joint(encoder_outputs=x)
-        joined = torch.reshape(joined, [T, -1])
-
-        n_durations = len(self.durations)
-        token_prob = joined[:,  :-n_durations]
-        duration_prob = joined[:, -n_durations:]
-
-        tokens = torch.argmax(token_prob, dim=-1).tolist()
-        durations = torch.argmax(duration_prob, dim=-1).tolist()
-
-        # Initialize blank state and empty label set in Hypothesis
-        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
-
-        t = 0
-        while t < T:
-            k = tokens[t]
-            duration = self.durations[durations[t]]
-            assert(duration != 0)
-            if k != self._blank_index:
-                hypothesis.y_sequence.append(k)
-            t = t + duration 
-
-
-
-        return hypothesis
 
