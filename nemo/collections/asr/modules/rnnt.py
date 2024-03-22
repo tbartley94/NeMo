@@ -1566,7 +1566,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             rand = torch.gt(rand, 0.5)
             g = g * rand
         else:
-            g = g * 0
+            g = g
 
         inp = f + g  # [B, T, U, H]
 
