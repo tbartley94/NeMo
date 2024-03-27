@@ -324,9 +324,11 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', False),
                     )
                 else:
+                    print("self.cfg.greedy is", self.cfg.greedy)
                     self.decoding = rnnt_greedy_decoding.GreedyBatchedTDTInfer(
                         decoder_model=decoder,
                         joint_model=joint,
+                        autoregressive_inference=self.cfg.greedy.get('autoregressive_inference'),
                         blank_index=self.blank_id,
                         durations=self.durations,
                         max_symbols_per_step=(

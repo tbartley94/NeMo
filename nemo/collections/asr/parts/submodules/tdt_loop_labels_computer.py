@@ -31,6 +31,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         self,
         decoder,
         joint,
+        autoregressive_inference: bool,
         blank_index: int,
         durations: Union[list[int], ListConfig[int]],
         max_symbols_per_step: Optional[int] = None,
@@ -61,6 +62,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
         self.preserve_frame_confidence = preserve_frame_confidence
         self._SOS = self._blank_index
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
+        self.autoregressive_inference = autoregressive_inference
         assert self._SOS == self._blank_index  # "blank as pad" algorithm only
 
     def __call__(
@@ -152,7 +154,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
             # stage 2: get joint output, iteratively seeking for non-blank labels
             # blank label in `labels` tensor means "end of hypothesis" (for this index)
             logits = (
-                self.joint.joint_after_projection(x[batch_indices, safe_time_indices].unsqueeze(1), decoder_output,)
+                self.joint.joint_after_projection(x[batch_indices, safe_time_indices].unsqueeze(1), decoder_output, self.autoregressive_inference)
                 .squeeze(1)
                 .squeeze(1)
             )
@@ -190,7 +192,7 @@ class GreedyBatchedTDTLoopLabelsComputer(ConfidenceMethodMixin):
                 torch.where(advance_mask, time_indices, time_indices_current_labels, out=time_indices_current_labels)
                 logits = (
                     self.joint.joint_after_projection(
-                        x[batch_indices, safe_time_indices].unsqueeze(1), decoder_output,
+                        x[batch_indices, safe_time_indices].unsqueeze(1), decoder_output, self.autoregressive_inference
                     )
                     .squeeze(1)
                     .squeeze(1)

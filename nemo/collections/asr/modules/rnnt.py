@@ -1336,8 +1336,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         # Optional arguments
         dropout = jointnet.get('dropout', 0.0)
 
-        self.pred, self.enc, self.joint_net = self._joint_net_modules(
+        self.pred, self.enc, self.token_joint_net, self.duration_joint_net = self._joint_net_modules(
             num_classes=self._num_classes,  # add 1 for blank symbol
+            num_durations=num_extra_outputs,
             pred_n_hidden=self.pred_hidden,
             enc_n_hidden=self.encoder_hidden,
             joint_n_hidden=self.joint_hidden,
@@ -1527,7 +1528,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         return self.pred(prednet_output)
 
-    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor, autoregressive_inference: bool) -> torch.Tensor:
         """
         Compute the joint step of the network after projection.
 
@@ -1566,17 +1567,24 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             rand = torch.gt(rand, 0.5)
             g = g * rand
         else:
-            g = g
+            if autoregressive_inference:
+                g = g * 1
+            else:
+                g = g * 0
 
         inp = f + g  # [B, T, U, H]
 
-        del f, g
 
         # Forward adapter modules on joint hidden
         if self.is_adapter_available():
             inp = self.forward_enabled_adapters(inp)
 
-        res = self.joint_net(inp)  # [B, T, U, V + 1]
+        token_res = self.token_joint_net(inp)  # [B, T, U, V + 1]
+        duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
+
+        res = torch.concat([token_res, duration_res], dim=-1)
+        del f, g
+        del token_res, duration_res
 
         del inp
 
@@ -1599,7 +1607,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         return res
 
-    def _joint_net_modules(self, num_classes, pred_n_hidden, enc_n_hidden, joint_n_hidden, activation, dropout):
+    def _joint_net_modules(self, num_classes, num_durations, pred_n_hidden, enc_n_hidden, joint_n_hidden, activation, dropout):
         """
         Prepare the trainable modules of the Joint Network
 
@@ -1626,12 +1634,17 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         elif activation == 'tanh':
             activation = torch.nn.Tanh()
 
-        layers = (
+        token_layers = (
             [activation]
             + ([torch.nn.Dropout(p=dropout)] if dropout else [])
-            + [torch.nn.Linear(joint_n_hidden, num_classes)]
+            + [torch.nn.Linear(joint_n_hidden, num_classes - num_durations)]
         )
-        return pred, enc, torch.nn.Sequential(*layers)
+        duration_layers = (
+            [activation]
+            + ([torch.nn.Dropout(p=dropout)] if dropout else [])
+            + [torch.nn.Linear(joint_n_hidden, num_durations)]
+        )
+        return pred, enc, torch.nn.Sequential(*token_layers), torch.nn.Sequential(*duration_layers)
 
     # Adapter method overrides
     def add_adapter(self, name: str, cfg: DictConfig):

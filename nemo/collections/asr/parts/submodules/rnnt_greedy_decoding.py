@@ -2632,6 +2632,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
         self,
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
+        autoregressive_inference: bool,
         blank_index: int,
         durations: List[int],
         max_symbols_per_step: Optional[int] = None,
@@ -2664,6 +2665,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
                 preserve_alignments=preserve_alignments,
                 preserve_frame_confidence=preserve_frame_confidence,
                 confidence_method_cfg=confidence_method_cfg,
+                autoregressive_inference=autoregressive_inference,
             )
             self._greedy_decode = self._greedy_decode_blank_as_pad_loop_labels
         else:
