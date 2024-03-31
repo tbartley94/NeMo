@@ -33,27 +33,28 @@ class ASRModel(ModelPT, ABC):
         val_loss = {}
         tensorboard_logs = {}
 
-        if 'val_loss' in outputs[0]:
-            val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-            val_loss = {'val_loss': val_loss_mean}
+        if len(outputs) > 0:
+            if 'val_loss' in outputs[0]:
+                val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+                val_loss = {'val_loss': val_loss_mean}
 
-            tensorboard_logs.update(val_loss)
+                tensorboard_logs.update(val_loss)
 
-        if "val_wer_num" in outputs[0]:
-            wer_num = torch.stack([x['val_wer_num'] for x in outputs]).sum()
-            wer_denom = torch.stack([x['val_wer_denom'] for x in outputs]).sum()
-            val_wer = {'val_wer': wer_num / wer_denom}
+            if "val_wer_num" in outputs[0]:
+                wer_num = torch.stack([x['val_wer_num'] for x in outputs]).sum()
+                wer_denom = torch.stack([x['val_wer_denom'] for x in outputs]).sum()
+                val_wer = {'val_wer': wer_num / wer_denom}
 
-            tensorboard_logs.update(val_wer)
+                tensorboard_logs.update(val_wer)
 
-        if "val_bleu_num" in outputs[0]:
-            bleu_pred_len = torch.stack([x[f"val_bleu_pred_len"] for x in outputs]).sum()
-            bleu_target_len = torch.stack([x[f"val_bleu_target_len"] for x in outputs]).sum()
-            bleu_num = torch.stack([x[f"val_bleu_num"] for x in outputs]).sum(dim=0)
-            bleu_denom = torch.stack([x[f"val_bleu_denom"] for x in outputs]).sum(dim=0)
-            val_bleu = {"val_bleu": self.bleu._compute_bleu(bleu_pred_len, bleu_target_len, bleu_num, bleu_denom)}
+            if "val_bleu_num" in outputs[0]:
+                bleu_pred_len = torch.stack([x[f"val_bleu_pred_len"] for x in outputs]).sum()
+                bleu_target_len = torch.stack([x[f"val_bleu_target_len"] for x in outputs]).sum()
+                bleu_num = torch.stack([x[f"val_bleu_num"] for x in outputs]).sum(dim=0)
+                bleu_denom = torch.stack([x[f"val_bleu_denom"] for x in outputs]).sum(dim=0)
+                val_bleu = {"val_bleu": self.bleu._compute_bleu(bleu_pred_len, bleu_target_len, bleu_num, bleu_denom)}
 
-            tensorboard_logs.update(val_bleu)
+                tensorboard_logs.update(val_bleu)
 
         return {**val_loss, 'log': tensorboard_logs}
 
