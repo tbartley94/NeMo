@@ -898,6 +898,13 @@ class ModelPT(LightningModule, Model):
         if self.validation_step_outputs is not None and len(self.validation_step_outputs) == 0:
             return {}
 
+#        print("before self.validation_step_outputs is", self.validation_step_outputs)
+#        if len(self.validation_step_outputs) > 1:
+#            if len(self.validation_step_outputs[1]) == 0:
+#                self.validation_step_outputs = [self.validation_step_outputs[0]]
+#
+#        print("after self.validation_step_outputs is", self.validation_step_outputs)
+
         # Case where we provide exactly 1 data loader
         if isinstance(self.validation_step_outputs[0], dict):
             output_dict = self.multi_validation_epoch_end(self.validation_step_outputs, dataloader_idx=0)
