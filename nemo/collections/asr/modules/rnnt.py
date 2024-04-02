@@ -1349,7 +1349,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 activation=self.activation,
                 dropout=dropout,
             )
-        elif self.joint_type == 2:
+        elif self.joint_type == 2 or self.joint_type == 3 or self.joint_type == 4:
             self.pred, self.enc, self.token_joint_net, self.duration_joint_net = self._joint_net_modules_separate(
                 num_classes=self._num_classes,
                 num_durations=num_extra_outputs,
@@ -1587,6 +1587,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             res = self.joint_net(inp)  # [B, T, U, V + 1]
 
             del inp
+
+            if self.preserve_memory:
+                torch.cuda.empty_cache()
         elif self.joint_type == 1:
             if self.training:
                 [B, _, U, _] = g.shape
@@ -1640,6 +1643,39 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
             if self.preserve_memory:
                 torch.cuda.empty_cache()
+
+        elif self.joint_type == 3:
+            if self.training:
+                inp = f + g  # [B, T, U, H]
+
+                token_res1 = self.token_joint_net(inp).log_softmax(dim=-1)
+                token_res2 = self.token_joint_net(f + g * 0).log_softmax(dim=-1)
+
+                token_res = torch.minimum(token_res1, token_res2)
+
+                duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
+
+                res = torch.concat([token_res, duration_res], dim=-1)
+                del f, g
+                del token_res, duration_res, token_res1, token_res2
+
+                del inp
+            else:
+                if autoregressive_inference:
+                    g = g * 1
+                else:
+                    g = g * 0
+                inp = f + g  # [B, T, U, H]
+
+                token_res = self.token_joint_net(inp)
+
+                duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
+
+                res = torch.concat([token_res, duration_res], dim=-1)
+                del f, g
+                del token_res, duration_res
+
+                del inp
 
         # If log_softmax is automatic
         if self.log_softmax is None:
