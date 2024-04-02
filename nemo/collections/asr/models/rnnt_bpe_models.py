@@ -315,12 +315,25 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         self.cfg.decoding = self.set_decoding_type_according_to_loss(self.cfg.decoding)
         # Setup decoding object
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, autoregressive_inference=True, tokenizer=self.tokenizer,
         )
 
         # Setup wer object
         self.wer = WER(
             decoding=self.decoding,
+            batch_dim_index=0,
+            use_cer=self._cfg.get('use_cer', False),
+            log_prediction=self._cfg.get('log_prediction', True),
+            dist_sync_on_step=True,
+        )
+
+        self.non_autoregressive_decoding = RNNTBPEDecoding(
+            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, autoregressive_inference=False, tokenizer=self.tokenizer,
+        )
+
+        # Setup wer object
+        self.non_autoregressive_wer = WER(
+            decoding=self.non_autoregressive_decoding,
             batch_dim_index=0,
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
@@ -413,11 +426,23 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, autoregressive_inference=True, tokenizer=self.tokenizer,
         )
 
         self.wer = WER(
             decoding=self.decoding,
+            batch_dim_index=self.wer.batch_dim_index,
+            use_cer=self.wer.use_cer,
+            log_prediction=self.wer.log_prediction,
+            dist_sync_on_step=True,
+        )
+
+        self.non_autoregressive_decoding = RNNTBPEDecoding(
+            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, autoregressive_inference=False, tokenizer=self.tokenizer,
+        )
+
+        self.non_autoregressive_wer = WER(
+            decoding=self.non_autoregressive_decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
@@ -463,11 +488,23 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, autoregressive_inference=True, tokenizer=self.tokenizer,
         )
 
         self.wer = WER(
             decoding=self.decoding,
+            batch_dim_index=self.wer.batch_dim_index,
+            use_cer=self.wer.use_cer,
+            log_prediction=self.wer.log_prediction,
+            dist_sync_on_step=True,
+        )
+
+        self.non_autoregressive_decoding = RNNTBPEDecoding(
+            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, autoregressive_inference=False, tokenizer=self.tokenizer,
+        )
+
+        self.non_autoregressive_wer = WER(
+            decoding=self.non_autoregressive_decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,

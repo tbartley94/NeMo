@@ -263,7 +263,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             raise NotImplementedError(f"Confidence calculation is not supported for strategy `{self.cfg.strategy}`")
 
         if self.cfg.strategy == 'greedy':
-            print("duration is", self.durations)
             if self.big_blank_durations is None or self.big_blank_durations == []:
                 if self.durations is None or self.durations == []:
                     self.decoding = rnnt_greedy_decoding.GreedyRNNTInfer(
@@ -284,6 +283,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         joint_model=joint,
                         blank_index=self.blank_id,
                         durations=self.durations,
+                        autoregressive_inference=self.autoregressive_inference,
                         max_symbols_per_step=(
                             self.cfg.greedy.get('max_symbols', None)
                             or self.cfg.greedy.get('max_symbols_per_step', None)
@@ -324,11 +324,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', False),
                     )
                 else:
-                    print("self.cfg.greedy is", self.cfg.greedy)
                     self.decoding = rnnt_greedy_decoding.GreedyBatchedTDTInfer(
                         decoder_model=decoder,
                         joint_model=joint,
-                        autoregressive_inference=self.cfg.greedy.get('autoregressive_inference'),
                         blank_index=self.blank_id,
                         durations=self.durations,
                         max_symbols_per_step=(
@@ -1121,7 +1119,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
     """
 
     def __init__(
-        self, decoding_cfg, decoder, joint, vocabulary,
+        self, decoding_cfg, decoder, joint, vocabulary, autoregressive_inference
     ):
         # we need to ensure blank is the last token in the vocab for the case of RNNT and Multi-blank RNNT.
         blank_id = len(vocabulary) + joint.num_extra_outputs
@@ -1130,6 +1128,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
             blank_id = len(vocabulary)
 
         self.labels_map = dict([(i, vocabulary[i]) for i in range(len(vocabulary))])
+        self.autoregressive_inference = autoregressive_inference
 
         super(RNNTDecoding, self).__init__(
             decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id,
@@ -1383,7 +1382,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         tokenizer: The tokenizer which will be used for decoding.
     """
 
-    def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec):
+    def __init__(self, decoding_cfg, decoder, joint, autoregressive_inference, tokenizer: TokenizerSpec):
         blank_id = tokenizer.tokenizer.vocab_size  # RNNT or TDT models.
 
         # multi-blank RNNTs
@@ -1391,6 +1390,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
             blank_id = tokenizer.tokenizer.vocab_size + joint.num_extra_outputs
 
         self.tokenizer = tokenizer
+        self.autoregressive_inference = autoregressive_inference
 
         super(RNNTBPEDecoding, self).__init__(
             decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id

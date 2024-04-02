@@ -99,11 +99,26 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         self.cfg.decoding = self.set_decoding_type_according_to_loss(self.cfg.decoding)
         # Setup decoding objects
         self.decoding = RNNTDecoding(
-            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
+            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary, autoregressive_inference=True
         )
+        self.non_autoregressive_decoding = RNNTDecoding(
+            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary, autoregressive_inference=False,
+        )
+
+        assert not self.non_autoregressive_decoding.autoregressive_inference
+
         # Setup WER calculation
         self.wer = WER(
             decoding=self.decoding,
+            batch_dim_index=0,
+            use_cer=self._cfg.get('use_cer', False),
+            log_prediction=self._cfg.get('log_prediction', True),
+            dist_sync_on_step=True,
+        )
+
+        assert not self.non_autoregressive_decoding.autoregressive_inference
+        self.non_autoregressive_wer = WER(
+            decoding=self.non_autoregressive_decoding,
             batch_dim_index=0,
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
@@ -120,6 +135,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if self.joint.fuse_loss_wer or (
             self.decoding.joint_fused_batch_size is not None and self.decoding.joint_fused_batch_size > 0
         ):
+            assert False
             self.joint.set_loss(self.loss)
             self.joint.set_wer(self.wer)
 
@@ -336,7 +352,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
             self.decoding = RNNTDecoding(
-                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
+                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary, autoregressive_inference=True,
+            )
+            self.non_autoregressive_decoding = RNNTDecoding(
+                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary, autoregressive_inference=False,
             )
 
             self.wer = WER(
@@ -347,10 +366,19 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 dist_sync_on_step=True,
             )
 
+            self.non_autoregressive_wer = WER(
+                decoding=self.non_autoregressive_decoding,
+                batch_dim_index=self.wer.batch_dim_index,
+                use_cer=self.wer.use_cer,
+                log_prediction=self.wer.log_prediction,
+                dist_sync_on_step=True,
+            )
+
             # Setup fused Joint step
             if self.joint.fuse_loss_wer or (
                 self.decoding.joint_fused_batch_size is not None and self.decoding.joint_fused_batch_size > 0
             ):
+                assert False
                 self.joint.set_loss(self.loss)
                 self.joint.set_wer(self.wer)
 
@@ -392,11 +420,21 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
         self.decoding = RNNTDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary,
+            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary, autoregressive_inference=True
+        )
+        self.non_autoregressive_decoding = RNNTDecoding(
+            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, vocabulary=self.joint.vocabulary, autoregressive_inference=False
         )
 
         self.wer = WER(
             decoding=self.decoding,
+            batch_dim_index=self.wer.batch_dim_index,
+            use_cer=self.wer.use_cer,
+            log_prediction=self.wer.log_prediction,
+            dist_sync_on_step=True,
+        )
+        self.non_autoregressive_wer = WER(
+            decoding=self.non_autoregressive_decoding,
             batch_dim_index=self.wer.batch_dim_index,
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
@@ -407,6 +445,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if self.joint.fuse_loss_wer or (
             self.decoding.joint_fused_batch_size is not None and self.decoding.joint_fused_batch_size > 0
         ):
+            assert False
             self.joint.set_loss(self.loss)
             self.joint.set_wer(self.wer)
 
@@ -670,7 +709,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
             # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder, autoregressive_inference=True)
 
             loss_value = self.loss(
                 log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
@@ -700,8 +739,18 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 self.wer.reset()
                 tensorboard_logs.update({'training_batch_wer': scores.float() / words})
 
+                self.non_autoregressive_wer.update(
+                    predictions=encoded,
+                    predictions_lengths=encoded_len,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                )
+                _, scores, words = self.non_autoregressive_wer.compute()
+                self.non_autoregressive_wer.reset()
+                tensorboard_logs.update({'training_batch_non_autoregressive_wer': scores.float() / words})
+
         else:
-            assert self.decoder is not None   # will  move later TODO(hainan)
+            assert False
             # If experimental fused Joint-Loss-WER is used
             if (sample_id + 1) % log_every_n_steps == 0:
                 compute_wer = True
@@ -797,7 +846,20 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             tensorboard_logs['val_wer_denom'] = wer_denom
             tensorboard_logs['val_wer'] = wer
 
+            self.non_autoregressive_wer.update(
+                predictions=encoded,
+                predictions_lengths=encoded_len,
+                targets=transcript,
+                targets_lengths=transcript_len,
+            )
+            wer, wer_num, wer_denom = self.non_autoregressive_wer.compute()
+            self.non_autoregressive_wer.reset()
+
+            tensorboard_logs['val_non_autoregressive_wer_num'] = wer_num
+            tensorboard_logs['val_non_autoregressive_wer_denom'] = wer_denom
+            tensorboard_logs['val_non_autoregressive_wer'] = wer
         else:
+            assert False
             assert self.decoder is not None
             # If experimental fused Joint-Loss-WER is used
             compute_wer = True
@@ -854,7 +916,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             val_loss_log = {}
         wer_num = torch.stack([x['val_wer_num'] for x in outputs]).sum()
         wer_denom = torch.stack([x['val_wer_denom'] for x in outputs]).sum()
-        tensorboard_logs = {**val_loss_log, 'val_wer': wer_num.float() / wer_denom}
+
+        non_autoregressive_wer_num = torch.stack([x['val_non_autoregressive_wer_num'] for x in outputs]).sum()
+        non_autoregressive_wer_denom = torch.stack([x['val_non_autoregressive_wer_denom'] for x in outputs]).sum()
+        tensorboard_logs = {**val_loss_log, 'val_wer': wer_num.float() / wer_denom, 'val_non_autoregressive_wer': non_autoregressive_wer_num.float() / non_autoregressive_wer_denom, }
         return {**val_loss_log, 'log': tensorboard_logs}
 
     def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):

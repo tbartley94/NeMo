@@ -47,6 +47,13 @@ class ASRModel(ModelPT, ABC):
 
                 tensorboard_logs.update(val_wer)
 
+            if "val_non_autoregressive_wer_num" in outputs[0]:
+                wer_num = torch.stack([x['val_non_autoregressive_wer_num'] for x in outputs]).sum()
+                wer_denom = torch.stack([x['val_non_autoregressive_wer_denom'] for x in outputs]).sum()
+                val_wer = {'val_non_autoregressive_wer': wer_num / wer_denom}
+
+                tensorboard_logs.update(val_wer)
+
             if "val_bleu_num" in outputs[0]:
                 bleu_pred_len = torch.stack([x[f"val_bleu_pred_len"] for x in outputs]).sum()
                 bleu_target_len = torch.stack([x[f"val_bleu_target_len"] for x in outputs]).sum()

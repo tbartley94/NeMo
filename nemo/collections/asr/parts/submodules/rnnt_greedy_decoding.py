@@ -157,6 +157,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
         blank_index: int,
+        autoregressive_inference: bool,
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
@@ -168,6 +169,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
 
         self._blank_index = blank_index
         self._SOS = blank_index  # Start of single index
+        self.autoregressive_inference = autoregressive_inference
 
         if max_symbols_per_step is not None and max_symbols_per_step <= 0:
             raise ValueError(f"Expected max_symbols_per_step > 0 (or None), got {max_symbols_per_step}")
@@ -233,7 +235,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
              logits of shape (B, T=1, U=1, V + 1)
         """
         with torch.no_grad():
-            logits = self.joint.joint(enc, pred)
+            logits = self.joint.joint(enc, pred, self.autoregressive_inference)
 
             if log_normalize is None:
                 if not logits.is_cuda:  # Use log softmax only if on CPU
@@ -2377,6 +2379,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
         blank_index: int,
+        autoregressive_inference: bool,
         durations: list,
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
@@ -2387,6 +2390,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             decoder_model=decoder_model,
             joint_model=joint_model,
             blank_index=blank_index,
+            autoregressive_inference=autoregressive_inference,
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
@@ -2632,7 +2636,6 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
         self,
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
-        autoregressive_inference: bool,
         blank_index: int,
         durations: List[int],
         max_symbols_per_step: Optional[int] = None,
@@ -2665,7 +2668,6 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
                 preserve_alignments=preserve_alignments,
                 preserve_frame_confidence=preserve_frame_confidence,
                 confidence_method_cfg=confidence_method_cfg,
-                autoregressive_inference=autoregressive_inference,
             )
             self._greedy_decode = self._greedy_decode_blank_as_pad_loop_labels
         else:
