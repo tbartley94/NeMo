@@ -1288,7 +1288,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self,
         jointnet: Dict[str, Any],
         num_classes: int,
-        joint_type: int,
+        joint_type: int = 0,
         num_extra_outputs: int = 0,
         vocabulary: Optional[List] = None,
         log_softmax: Optional[bool] = None,
@@ -1298,7 +1298,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         experimental_fuse_loss_wer: Any = None,
     ):
         super().__init__()
-
         self.vocabulary = vocabulary
 
         self._vocab_size = num_classes
@@ -1380,7 +1379,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         # encoder = (B, D, T)
         # decoder = (B, D, U) if passed, else None
         encoder_outputs = encoder_outputs.transpose(1, 2)  # (B, T, D)
-
         if decoder_outputs is not None:
             decoder_outputs = decoder_outputs.transpose(1, 2)  # (B, U, D)
 
@@ -1594,9 +1592,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         elif self.joint_type == 1:
             if self.training:
                 [B, _, U, _] = g.shape
-                rand = torch.rand([B, 1, U, 1]).to(g.device)
-                rand = torch.gt(rand, 0.5)
-                g = g * rand
+                g = g * 0
             else:
                 if autoregressive_inference:
                     g = g * 1
@@ -1618,15 +1614,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         elif self.joint_type == 2:
             if self.training:
                 [B, _, U, _] = g.shape
-                rand = torch.rand([B, 1, U, 1]).to(g.device)
-                rand = torch.gt(rand, 0.5)
-                g = g * rand
+                g = g * 0
             else:
                 if autoregressive_inference:
                     g = g * 1
                 else:
                     g = g * 0
-
+            print(g)
             inp = f + g  # [B, T, U, H]
 
             # Forward adapter modules on joint hidden
@@ -1644,147 +1638,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
             if self.preserve_memory:
                 torch.cuda.empty_cache()
-
-        elif self.joint_type == 3:
-            if self.training:
-                inp = f + g  # [B, T, U, H]
-
-                r = random.uniform(0, 1)
-                if r > 0.5:
-                    token_res1 = self.token_joint_net(inp).log_softmax(dim=-1)
-                    token_res2 = self.token_joint_net(f + g * 0).log_softmax(dim=-1)
-
-                    token_res = torch.minimum(token_res1, token_res2)
-
-                    duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                    res = torch.concat([token_res, duration_res], dim=-1)
-                    del f, g
-                    del token_res, duration_res, token_res1, token_res2
-
-                    del inp
-                else:
-                    token_res = self.token_joint_net(inp)
-
-                    duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                    res = torch.concat([token_res, duration_res], dim=-1)
-                    del f, g
-                    del token_res, duration_res
-
-                    del inp
-
-            else:
-                if autoregressive_inference:
-                    g = g * 1
-                else:
-                    g = g * 0
-                inp = f + g  # [B, T, U, H]
-
-                token_res = self.token_joint_net(inp)
-
-                duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                res = torch.concat([token_res, duration_res], dim=-1)
-                del f, g
-                del token_res, duration_res
-
-                del inp
-
-        elif self.joint_type == 4:
-            if self.training:
-                inp = f + g  # [B, T, U, H]
-
-                r = random.uniform(0, 1)
-                if r > 0.5:
-                    token_res1 = self.token_joint_net(inp).log_softmax(dim=-1)
-                    token_res2 = self.token_joint_net(f + g * 0).log_softmax(dim=-1)
-
-                    if r > 0.75:
-                        token_res = torch.minimum(token_res1, token_res2)
-                    else:
-                        token_res = torch.maximum(token_res1, token_res2)
-
-                    duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                    res = torch.concat([token_res, duration_res], dim=-1)
-                    del f, g
-                    del token_res, duration_res, token_res1, token_res2
-
-                    del inp
-                else:
-                    token_res = self.token_joint_net(inp)
-
-                    duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                    res = torch.concat([token_res, duration_res], dim=-1)
-                    del f, g
-                    del token_res, duration_res
-
-                    del inp
-
-            else:
-                if autoregressive_inference:
-                    g = g * 1
-                else:
-                    g = g * 0
-                inp = f + g  # [B, T, U, H]
-
-                token_res = self.token_joint_net(inp)
-
-                duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                res = torch.concat([token_res, duration_res], dim=-1)
-                del f, g
-                del token_res, duration_res
-
-                del inp
-
-        elif self.joint_type == 5:
-            if self.training:
-                inp = f + g  # [B, T, U, H]
-
-                r = random.uniform(0, 1)
-                if r > 0.5:
-                    token_res1 = self.token_joint_net(inp).log_softmax(dim=-1)
-                    token_res2 = self.token_joint_net(f + g * 0).log_softmax(dim=-1)
-
-                    token_res = 2 * token_res2 - token_res1
-
-                    duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                    res = torch.concat([token_res, duration_res], dim=-1)
-                    del f, g
-                    del token_res, duration_res, token_res1, token_res2
-
-                    del inp
-                else:
-                    token_res = self.token_joint_net(inp)
-
-                    duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                    res = torch.concat([token_res, duration_res], dim=-1)
-                    del f, g
-                    del token_res, duration_res
-
-                    del inp
-
-            else:
-                if autoregressive_inference:
-                    g = g * 1
-                else:
-                    g = g * 0
-                inp = f + g  # [B, T, U, H]
-
-                token_res = self.token_joint_net(inp)
-
-                duration_res = self.duration_joint_net(f + g * 0)  # [B, T, U, V + 1]
-
-                res = torch.concat([token_res, duration_res], dim=-1)
-                del f, g
-                del token_res, duration_res
-
-                del inp
 
         # If log_softmax is automatic
         if self.log_softmax is None:

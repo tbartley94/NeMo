@@ -87,6 +87,7 @@ class BLEU(SacreBLEUScore):
         lowercase: bool = False,
         weights: Optional[Sequence[float]] = None,
         smooth: bool = False,
+        fold_consecutive=True,
         log_prediction=True,
         batch_dim_index=0,
         dist_sync_on_step=False,
@@ -102,6 +103,7 @@ class BLEU(SacreBLEUScore):
         self.has_spl_tokens = False
         self.decoding = decoding
         self.decode = None
+        self.fold_consecutive=fold_consecutive
         if isinstance(self.decoding, AbstractRNNTDecoding):
             self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets: self.decoding.rnnt_decoder_predictions_tensor(
                 encoder_output=predictions, encoded_lengths=predictions_lengths

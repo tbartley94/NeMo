@@ -25,7 +25,7 @@ from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.losses.rnnt import RNNTLoss
-from nemo.collections.asr.metrics.wer import WER
+from nemo.collections.asr.metrics import WER, BLEU
 from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
@@ -94,7 +94,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         self.cfg.decoding = self.set_decoding_type_according_to_loss(self.cfg.decoding)
         # Setup decoding object
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, autoregressive_inference=False, tokenizer=self.tokenizer,
         )
 
         # Setup wer object
@@ -104,6 +104,12 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             use_cer=self.cfg.get('use_cer', False),
             log_prediction=self.cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+        )
+        self.bleu = BLEU(
+            decoding=self.decoding,
+            batch_dim_index=0,
+            log_prediction=self.cfg.get('log_prediction', True),
+            dist_sync_on_step=True,            
         )
 
         # Setup fused Joint step if flag is set
@@ -126,7 +132,12 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             dist_sync_on_step=True,
             log_prediction=self.cfg.get("log_prediction", False),
         )
-
+        self.ctc_bleu = BLEU(
+            decoding=self.ctc_decoding,
+            dist_sync_on_step=True,
+            log_prediction=self.cfg.get("log_prediction", False),
+        )
+        
         # setting the RNNT decoder as the default one
         self.cur_decoder = "rnnt"
 

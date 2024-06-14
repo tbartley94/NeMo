@@ -157,7 +157,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
         blank_index: int,
-        autoregressive_inference: bool,
+        autoregressive_inference: bool = False,
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,

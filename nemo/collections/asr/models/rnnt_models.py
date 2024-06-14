@@ -16,7 +16,7 @@ import copy
 import json
 import os
 import tempfile
-from math import ceil
+from math import ceil, exp
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -28,7 +28,7 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToCharDALIDataset, DALIOutputs
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.losses.rnnt import RNNTLoss, resolve_rnnt_default_loss_name
-from nemo.collections.asr.metrics.wer import WER
+from nemo.collections.asr.metrics import WER, BLEU
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import (
@@ -135,7 +135,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if self.joint.fuse_loss_wer or (
             self.decoding.joint_fused_batch_size is not None and self.decoding.joint_fused_batch_size > 0
         ):
-            assert False
             self.joint.set_loss(self.loss)
             self.joint.set_wer(self.wer)
 
@@ -789,7 +788,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # Preserve batch acoustic model T and language model U parameters if normalizing
         if self._optim_normalize_joint_txu:
             self._optim_normalize_txu = [encoded_len.max(), transcript_len.max()]
-
         return {'loss': loss_value}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):

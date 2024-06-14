@@ -345,6 +345,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             self.joint.set_loss(self.loss)
             self.joint.set_wer(self.wer)
 
+
     def change_vocabulary(
         self,
         new_tokenizer_dir: Union[str, DictConfig],
@@ -502,6 +503,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         self.non_autoregressive_decoding = RNNTBPEDecoding(
             decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, autoregressive_inference=False, tokenizer=self.tokenizer,
         )
+        self.decoding= self.non_autoregressive_decoding
 
         self.non_autoregressive_wer = WER(
             decoding=self.non_autoregressive_decoding,

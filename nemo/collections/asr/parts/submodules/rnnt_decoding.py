@@ -262,7 +262,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         ):
             raise NotImplementedError(f"Confidence calculation is not supported for strategy `{self.cfg.strategy}`")
 
-        if self.cfg.strategy == 'greedy':
+        if True: #self.cfg.strategy == 'greedy':
             if self.big_blank_durations is None or self.big_blank_durations == []:
                 if self.durations is None or self.durations == []:
                     self.decoding = rnnt_greedy_decoding.GreedyRNNTInfer(
@@ -1119,7 +1119,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
     """
 
     def __init__(
-        self, decoding_cfg, decoder, joint, vocabulary, autoregressive_inference
+        self, decoding_cfg, decoder, joint, vocabulary, autoregressive_inference = False,
     ):
         # we need to ensure blank is the last token in the vocab for the case of RNNT and Multi-blank RNNT.
         blank_id = len(vocabulary) + joint.num_extra_outputs
