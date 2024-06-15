@@ -1620,7 +1620,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     g = g * 1
                 else:
                     g = g * 0
-            print(g)
             inp = f + g  # [B, T, U, H]
 
             # Forward adapter modules on joint hidden
