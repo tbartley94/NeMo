@@ -96,6 +96,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             self.joint2 = EncDecRNNTModel.from_config_dict(self.cfg.joint2)
             self.run_backward = True
 
+        print("HERE self.cfg", self.cfg)
+        print("HERE backward", self.run_backward)
+
         # Setup RNNT Loss
         loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
 
@@ -118,12 +121,22 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         self.cfg.decoding = self.set_decoding_type_according_to_loss(self.cfg.decoding)
         # Setup decoding objects
-        self.decoding = RNNTDecoding(
-            decoding_cfg=self.cfg.decoding,
-            decoder=self.decoder,
-            joint=self.joint,
-            vocabulary=self.joint.vocabulary,
-        )
+        if not self.run_backward:
+            self.decoding = RNNTDecoding(
+                decoding_cfg=self.cfg.decoding,
+                decoder=self.decoder,
+                joint=self.joint,
+                vocabulary=self.joint.vocabulary,
+            )
+        else:
+            self.decoding = RNNTDecoding(
+                decoding_cfg=self.cfg.decoding,
+                decoder=self.decoder,
+                decoder2=self.decoder2,
+                joint=self.joint,
+                joint2=self.joint2,
+                vocabulary=self.joint.vocabulary,
+            )
         # Setup WER calculation
         self.wer = WER(
             decoding=self.decoding,

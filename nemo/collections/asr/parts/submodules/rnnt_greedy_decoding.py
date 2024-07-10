@@ -158,6 +158,8 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         self,
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
+        decoder_model2: rnnt_abstract.AbstractRNNTDecoder,
+        joint_model2: rnnt_abstract.AbstractRNNTJoint,
         blank_index: int,
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
@@ -167,6 +169,8 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         super().__init__()
         self.decoder = decoder_model
         self.joint = joint_model
+        self.decoder2 = decoder_model2
+        self.joint2 = joint_model2
 
         self._blank_index = blank_index
         self._SOS = blank_index  # Start of single index
@@ -2438,6 +2442,8 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         self,
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
+        decoder_model2: rnnt_abstract.AbstractRNNTDecoder,
+        joint_model2: rnnt_abstract.AbstractRNNTJoint,
         blank_index: int,
         durations: list,
         max_symbols_per_step: Optional[int] = None,
@@ -2449,6 +2455,8 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         super().__init__(
             decoder_model=decoder_model,
             joint_model=joint_model,
+            decoder_model2=decoder_model2,
+            joint_model2=joint_model2,
             blank_index=blank_index,
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
@@ -2503,6 +2511,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         self.joint.train(joint_training_state)
 
         return (packed_result,)
+
 
     @torch.no_grad()
     def _greedy_decode(
@@ -2634,6 +2643,143 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
 
         # Unpack the hidden states
         hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
+
+        return hypothesis
+
+    @torch.no_grad()
+    def _greedy_decode_backward(
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
+    ):
+        # x: [T, 1, D]
+        # out_len: [seq_len]
+
+        # Initialize blank state and empty label set in Hypothesis
+        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
+
+        if partial_hypotheses is not None:
+            hypothesis.last_token = partial_hypotheses.last_token
+            hypothesis.y_sequence = (
+                partial_hypotheses.y_sequence.cpu().tolist()
+                if isinstance(partial_hypotheses.y_sequence, torch.Tensor)
+                else partial_hypotheses.y_sequence
+            )
+            if partial_hypotheses.dec_state is not None:
+                hypothesis.dec_state = self.decoder2.batch_concat_states([partial_hypotheses.dec_state])
+                hypothesis.dec_state = _states_to_device(hypothesis.dec_state, x.device)
+
+        if self.preserve_alignments:
+            # Alignments is a 2-dimensional dangling list representing T x U
+            hypothesis.alignments = [[]]
+
+        if self.preserve_frame_confidence:
+            hypothesis.frame_confidence = [[]]
+
+        out_len = out_len.item()
+        x = torch.flip(x[:out_len,:,:], dims=(0,))
+
+        time_idx = 0
+        while time_idx < out_len:
+            # Extract encoder embedding at timestep t
+            # f = x[time_idx, :, :].unsqueeze(0)  # [1, 1, D]
+            f = x.narrow(dim=0, start=time_idx, length=1)
+
+            # Setup exit flags and counter
+            not_blank = True
+            symbols_added = 0
+
+            need_loop = True
+            # While blank is not predicted, or we dont run out of max symbols per timestep
+            while need_loop and (self.max_symbols is None or symbols_added < self.max_symbols):
+                # In the first timestep, we initialize the network with RNNT Blank
+                # In later timesteps, we provide previous predicted label as input.
+                if hypothesis.last_token is None and hypothesis.dec_state is None:
+                    last_label = self._SOS
+                else:
+                    last_label = label_collate([[hypothesis.last_token]])
+
+                # Perform prediction network and joint network steps.
+                g, hidden_prime = self._pred_step(last_label, hypothesis.dec_state)
+                # If preserving per-frame confidence, log_normalize must be true
+                logits = self._joint_step(f, g, log_normalize=False)
+                logp = logits[0, 0, 0, : -len(self.durations)]
+                if self.preserve_frame_confidence:
+                    logp = torch.log_softmax(logp, -1)
+
+                duration_logp = torch.log_softmax(logits[0, 0, 0, -len(self.durations) :], dim=-1)
+                del g
+
+                # torch.max(0) op doesnt exist for FP 16.
+                if logp.dtype != torch.float32:
+                    logp = logp.float()
+
+                # get index k, of max prob
+                v, k = logp.max(0)
+                k = k.item()  # K is the label at timestep t_s in inner loop, s >= 0.
+
+                d_v, d_k = duration_logp.max(0)
+                d_k = d_k.item()
+
+                skip = self.durations[d_k]
+
+                if self.preserve_alignments:
+                    # insert logprobs into last timestep
+                    hypothesis.alignments[-1].append((logp.to('cpu'), torch.tensor(k, dtype=torch.int32)))
+
+                if self.preserve_frame_confidence:
+                    # insert confidence into last timestep
+                    hypothesis.frame_confidence[-1].append(
+                        (self._get_confidence_tensor(logp), self._get_confidence_tensor(duration_logp))
+                        if self.include_duration_confidence
+                        else self._get_confidence_tensor(logp)
+                    )
+
+                del logp
+
+                # If blank token is predicted, exit inner loop, move onto next timestep t
+                if k == self._blank_index:
+                    not_blank = False
+                else:
+                    # Append token to label set, update RNN state.
+                    hypothesis.y_sequence.append(k)
+                    hypothesis.score += float(v)
+                    hypothesis.timestep.append(time_idx)
+                    hypothesis.dec_state = hidden_prime
+                    hypothesis.last_token = k
+
+                # Increment token counter.
+                symbols_added += 1
+                time_idx += skip
+                need_loop = skip == 0
+
+            # this rarely happens, but we manually increment the `skip` number
+            # if blank is emitted and duration=0 is predicted. This prevents possible
+            # infinite loops.
+            if skip == 0:
+                skip = 1
+
+            if self.preserve_alignments:
+                # convert Ti-th logits into a torch array
+                hypothesis.alignments.append([])  # blank buffer for next timestep
+
+            if self.preserve_frame_confidence:
+                hypothesis.frame_confidence.append([])  # blank buffer for next timestep
+
+            if symbols_added == self.max_symbols:
+                time_idx += 1
+
+        # Remove trailing empty list of Alignments
+        if self.preserve_alignments:
+            if len(hypothesis.alignments[-1]) == 0:
+                del hypothesis.alignments[-1]
+
+        # Remove trailing empty list of per-frame confidence
+        if self.preserve_frame_confidence:
+            if len(hypothesis.frame_confidence[-1]) == 0:
+                del hypothesis.frame_confidence[-1]
+
+        # Unpack the hidden states
+        hypothesis.dec_state = self.decoder2.batch_select_state(hypothesis.dec_state, 0)
+        hypothesis.y_sequence = hypothesis.y_sequence[::-1]
 
         return hypothesis
 

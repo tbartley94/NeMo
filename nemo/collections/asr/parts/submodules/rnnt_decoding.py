@@ -193,7 +193,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         blank_id: The id of the RNNT blank token.
     """
 
-    def __init__(self, decoding_cfg, decoder, joint, blank_id: int):
+    def __init__(self, decoding_cfg, decoder, joint, blank_id: int, decoder2, joint2):
         super(AbstractRNNTDecoding, self).__init__()
 
         # Convert dataclass to config object
@@ -291,6 +291,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     self.decoding = rnnt_greedy_decoding.GreedyTDTInfer(
                         decoder_model=decoder,
                         joint_model=joint,
+                        decoder_model2=decoder2,
+                        joint_model2=joint2,
                         blank_index=self.blank_id,
                         durations=self.durations,
                         max_symbols_per_step=(
@@ -1180,6 +1182,8 @@ class RNNTDecoding(AbstractRNNTDecoding):
         decoder,
         joint,
         vocabulary,
+        decoder2=None,
+        joint2=None,
     ):
         # we need to ensure blank is the last token in the vocab for the case of RNNT and Multi-blank RNNT.
         blank_id = len(vocabulary) + joint.num_extra_outputs
@@ -1194,6 +1198,8 @@ class RNNTDecoding(AbstractRNNTDecoding):
             decoder=decoder,
             joint=joint,
             blank_id=blank_id,
+            decoder2=decoder2,
+            joint2=joint2,
         )
 
         if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):
@@ -1447,7 +1453,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         tokenizer: The tokenizer which will be used for decoding.
     """
 
-    def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec):
+    def __init__(self, decoding_cfg, decoder, joint, decoder2, joint2, tokenizer: TokenizerSpec):
         blank_id = tokenizer.tokenizer.vocab_size  # RNNT or TDT models.
 
         # multi-blank RNNTs
@@ -1457,7 +1463,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         self.tokenizer = tokenizer
 
         super(RNNTBPEDecoding, self).__init__(
-            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id
+            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, decoder2=decoder2, joint2=joint2, blank_id=blank_id
         )
 
         if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):
