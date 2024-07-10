@@ -67,15 +67,34 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # Update config values required by components dynamically
         with open_dict(self.cfg.decoder):
             self.cfg.decoder.vocab_size = len(self.cfg.labels)
+        if 'decoder2' in self.cfg:
+            with open_dict(self.cfg.decoder2):
+                self.cfg.decoder2.vocab_size = len(self.cfg.labels)
 
         with open_dict(self.cfg.joint):
             self.cfg.joint.num_classes = len(self.cfg.labels)
             self.cfg.joint.vocabulary = self.cfg.labels
             self.cfg.joint.jointnet.encoder_hidden = self.cfg.model_defaults.enc_hidden
             self.cfg.joint.jointnet.pred_hidden = self.cfg.model_defaults.pred_hidden
+        if 'joint2' in self.cfg:
+            with open_dict(self.cfg.joint2):
+                self.cfg.joint2.num_classes = len(self.cfg.labels)
+                self.cfg.joint2.vocabulary = self.cfg.labels
+                self.cfg.joint2.jointnet.encoder_hidden = self.cfg.model_defaults.enc_hidden
+                self.cfg.joint2.jointnet.pred_hidden = self.cfg.model_defaults.pred_hidden
 
         self.decoder = EncDecRNNTModel.from_config_dict(self.cfg.decoder)
         self.joint = EncDecRNNTModel.from_config_dict(self.cfg.joint)
+
+        self.decoder2 = None
+        self.joint2 = None
+        self.run_backward = False
+        if 'decoder2' in self.cfg:
+            assert 'joint2' in self.cfg
+            assert not self.joint.fuse_loss_wer
+            self.decoder2 = EncDecRNNTModel.from_config_dict(self.cfg.decoder2)
+            self.joint2 = EncDecRNNTModel.from_config_dict(self.cfg.joint2)
+            self.run_backward = True
 
         # Setup RNNT Loss
         loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
@@ -686,6 +705,19 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # During training, loss must be computed, so decoder forward is necessary
         decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
+        if self.run_backward:
+            signal_len_list = signal_len.tolist()
+            transcript_len_list = transcript_len.tolist()
+
+            encoded2 = encoded * 1.0
+            for i in range(len(signal_len_list)):
+                encoded2[i,:,:encoded_len[i]] = torch.flip(encoded2[i,:,:encoded_len[i]], dims=(-1,))
+
+            transcript2 = transcript * 1
+            for i in range(len(transcript_len_list)):
+                transcript2[i,:transcript_len_list[i]] = torch.flip(transcript2[i,:transcript_len_list[i]], dims=(-1,))
+
+            decoder2, target_length2, states2 = self.decoder2(targets=transcript2, target_length=transcript_len)
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
@@ -698,6 +730,14 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if not self.joint.fuse_loss_wer:
             # Compute full joint and loss
             joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+            if self.run_backward:
+                joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
+                joint2 = torch.flip(joint2, dims=(1,))
+                B, T, U, _ = joint.shape
+                rand2 = torch.rand([B, T - 1, U, 1]).to(joint.device)
+                rand2 = torch.gt(rand2, 0.5)
+                joint[:,:-1,:,:] = joint[:,:-1,:,:] + joint2[:,1:,:,:] * rand2
+
             loss_value = self.loss(
                 log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
             )
@@ -876,11 +916,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             val_loss_log = {'val_loss': val_loss_mean}
         else:
             val_loss_log = {}
-        wer_num = torch.stack([x['val_wer_num'] for x in outputs]).sum()
-        wer_denom = torch.stack([x['val_wer_denom'] for x in outputs]).sum()
-        tensorboard_logs = {**val_loss_log, 'val_wer': wer_num.float() / wer_denom}
-        return {**val_loss_log, 'log': tensorboard_logs}
-
+        try:
+            wer_num = torch.stack([x['val_wer_num'] for x in outputs]).sum()
+            wer_denom = torch.stack([x['val_wer_denom'] for x in outputs]).sum()
+            tensorboard_logs = {**val_loss_log, 'val_wer': wer_num.float() / wer_denom}
+            return {**val_loss_log, 'log': tensorboard_logs}
+        except:
+            return {}
     def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
         if self.compute_eval_loss:
             test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
