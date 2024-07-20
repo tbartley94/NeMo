@@ -123,3 +123,25 @@ class StatelessNet(torch.nn.Module):
         if y is not None:
             state = [appended_y[:, appended_y.shape[1] - self.context_size + 1 :]]
         return out, state
+
+
+    @torch.no_grad
+    def fast_inference_run(self, y: torch.Tensor):
+        outs = []
+
+        [B, U] = y.shape
+        appended_y = y
+
+        for i in range(self.context_size):
+            out = self.embeds[i](y)
+            if i != 0:
+                out[:, i:, :] = out[
+                    :, :-i, :
+                ].clone()  # needs clone() here or it might complain about src and dst mem location have overlaps.
+                out[:, :i, :] *= 0.0
+            outs.append(out)
+
+        out = torch.concat(outs, axis=-1)
+        out = self.norm(out)
+
+        return out

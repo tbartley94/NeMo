@@ -1546,6 +1546,31 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         return self.pred(prednet_output)
 
+    def nar_joint(self, f: torch.Tensor):
+#        assert not self.training
+        f = self.enc(f)
+        inp = f.unsqueeze(dim=2)  # (B, T, 1, H)
+        res = self.joint_net(inp)  # [B, T, 1, V + 1]
+
+        if self.preserve_memory:
+            torch.cuda.empty_cache()
+
+        # If log_softmax is automatic
+        if self.log_softmax is None:
+            if not res.is_cuda:  # Use log softmax only if on CPU
+                if self.temperature != 1.0:
+                    res = (res / self.temperature).log_softmax(dim=-1)
+                else:
+                    res = res.log_softmax(dim=-1)
+        else:
+            if self.log_softmax:
+                if self.temperature != 1.0:
+                    res = (res / self.temperature).log_softmax(dim=-1)
+                else:
+                    res = res.log_softmax(dim=-1)
+
+        return res
+
     def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
         """
         Compute the joint step of the network after projection.
@@ -1578,6 +1603,15 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         f = f.unsqueeze(dim=2)  # (B, T, 1, H)
         g = g.unsqueeze(dim=1)  # (B, 1, U, H)
+
+        if self.training:
+            [B, _, U, _] = g.shape
+            rand = torch.rand([B, 1, U, 1]).to(g.device)
+            rand = torch.gt(rand, 0.5)
+            g = g * rand
+#        else:
+#            g = g * 0
+
         inp = f + g  # [B, T, U, H]
 
         del f, g

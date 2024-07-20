@@ -226,6 +226,30 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         # output: [B, 1, K]
         return self.decoder.predict(label, hidden, add_sos=add_sos, batch_size=batch_size)
 
+    def _joint_step_2(self, enc, pred, log_normalize: Optional[bool] = None):
+        """
+        Common joint step based on AbstractRNNTJoint implementation.
+
+        Args:
+            enc: Output of the Encoder model. A torch.Tensor of shape [B, 1, H1]
+            pred: Output of the Decoder model. A torch.Tensor of shape [B, 1, H2]
+            log_normalize: Whether to log normalize or not. None will log normalize only for CPU.
+
+        Returns:
+             logits of shape (B, T=1, U=1, V + 1)
+        """
+        with torch.no_grad():
+            logits = self.joint2.joint(enc, pred)
+
+            if log_normalize is None:
+                if not logits.is_cuda:  # Use log softmax only if on CPU
+                    logits = logits.log_softmax(dim=len(logits.shape) - 1)
+            else:
+                if log_normalize:
+                    logits = logits.log_softmax(dim=len(logits.shape) - 1)
+
+        return logits
+
     def _joint_step(self, enc, pred, log_normalize: Optional[bool] = None):
         """
         Common joint step based on AbstractRNNTJoint implementation.
@@ -2541,108 +2565,72 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         if self.preserve_frame_confidence:
             hypothesis.frame_confidence = [[]]
 
+        logits = self.joint.nar_joint(x)
+        logits = logits.view([-1, logits.shape[-1]])
+        v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+        v_d, k_d = logits[:,-len(self.durations):].max(-1)
+        k_t = k_t.tolist()
+        k_d = k_d.tolist()
+
+        useful_logits = []
         time_idx = 0
+        out_len = out_len.item()
         while time_idx < out_len:
-            # Extract encoder embedding at timestep t
-            # f = x[time_idx, :, :].unsqueeze(0)  # [1, 1, D]
-            f = x.narrow(dim=0, start=time_idx, length=1)
+            k = k_t[time_idx]
+            skip = k_d[time_idx] + 1
+            if k != self._blank_index:
+                # Append token to label set, update RNN state.
+                hypothesis.y_sequence.append(k)
+                hypothesis.timestep.append(time_idx)
+                useful_logits.append(logits[time_idx,:])
 
-            # Setup exit flags and counter
-            not_blank = True
-            symbols_added = 0
+            time_idx += skip
 
-            need_loop = True
-            # While blank is not predicted, or we dont run out of max symbols per timestep
-            while need_loop and (self.max_symbols is None or symbols_added < self.max_symbols):
-                # In the first timestep, we initialize the network with RNNT Blank
-                # In later timesteps, we provide previous predicted label as input.
-                if hypothesis.last_token is None and hypothesis.dec_state is None:
-                    last_label = self._SOS
-                else:
-                    last_label = label_collate([[hypothesis.last_token]])
+            hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
 
-                # Perform prediction network and joint network steps.
-                g, hidden_prime = self._pred_step(last_label, hypothesis.dec_state)
-                # If preserving per-frame confidence, log_normalize must be true
-                logits = self._joint_step(f, g, log_normalize=False)
-                logp = logits[0, 0, 0, : -len(self.durations)]
-                if self.preserve_frame_confidence:
-                    logp = torch.log_softmax(logp, -1)
 
-                duration_logp = torch.log_softmax(logits[0, 0, 0, -len(self.durations) :], dim=-1)
-                del g
+#        if True:
+#            reversed_timestep_tensor = torch.flip(torch.LongTensor(hypothesis.timestep).to(x.device), dims=(0,))  # reversed
+#            reversed_useful_frames = x[reversed_timestep_tensor,::]  # reversed
+#
+#            reversed_token_sequence = hypothesis.y_sequence[::-1]  # reversed
+#            reversed_token_sequence = [self._blank_index] + reversed_token_sequence[:-1]
+#            reversed_token_sequence_tensor = torch.LongTensor(reversed_token_sequence).to(x.device)
+#            reversed_token_sequence_tensor = reversed_token_sequence_tensor.view([1, -1])
+#
+#            reversed_decoder_embs = self.decoder2.prediction.fast_inference_run(reversed_token_sequence_tensor)  # [T, D]
+#            reversed_decoder_embs = reversed_decoder_embs.view([reversed_decoder_embs.shape[1], 1, -1]) # [T, 1, D]
+#
+##            reversed_logits1 = self.joint.nar_joint(reversed_useful_frames) #, reversed_decoder_embs)
+#            reversed_logits2 = self.joint2.joint(reversed_useful_frames, reversed_decoder_embs)
+##            reversed_logits2 += reversed_logits1
+#            reversed_logits2 = reversed_logits2.view([-1, reversed_logits2.shape[-1]])
+#
+#            logits = torch.flip(reversed_logits2, dims=(0,))
+##            logits1 = torch.cat(useful_logits, dim=0)
+##            logits1 = logits1.view([-1, logits2.shape[-1]])
+##            logits = logits1 + logits2
+#            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+#            token_sequence = k_t.tolist()
+#            hypothesis.y_sequence = token_sequence
 
-                # torch.max(0) op doesnt exist for FP 16.
-                if logp.dtype != torch.float32:
-                    logp = logp.float()
+        for t in range(3):
+            timestep_tensor = torch.LongTensor(hypothesis.timestep).to(x.device)
+            useful_frames = x[timestep_tensor,::]  # reversed
 
-                # get index k, of max prob
-                v, k = logp.max(0)
-                k = k.item()  # K is the label at timestep t_s in inner loop, s >= 0.
+            token_sequence = hypothesis.y_sequence
+            token_sequence = [self._blank_index] + token_sequence[:-1]
+            token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
+            token_sequence_tensor = token_sequence_tensor.view([1, -1])
 
-                d_v, d_k = duration_logp.max(0)
-                d_k = d_k.item()
+            decoder_embs = self.decoder.prediction.fast_inference_run(token_sequence_tensor)  # [T, D]
+            decoder_embs = decoder_embs.view([decoder_embs.shape[1], 1, -1]) # [T, 1, D]
 
-                skip = self.durations[d_k]
-
-                if self.preserve_alignments:
-                    # insert logprobs into last timestep
-                    hypothesis.alignments[-1].append((logp.to('cpu'), torch.tensor(k, dtype=torch.int32)))
-
-                if self.preserve_frame_confidence:
-                    # insert confidence into last timestep
-                    hypothesis.frame_confidence[-1].append(
-                        (self._get_confidence_tensor(logp), self._get_confidence_tensor(duration_logp))
-                        if self.include_duration_confidence
-                        else self._get_confidence_tensor(logp)
-                    )
-
-                del logp
-
-                # If blank token is predicted, exit inner loop, move onto next timestep t
-                if k == self._blank_index:
-                    not_blank = False
-                else:
-                    # Append token to label set, update RNN state.
-                    hypothesis.y_sequence.append(k)
-                    hypothesis.score += float(v)
-                    hypothesis.timestep.append(time_idx)
-                    hypothesis.dec_state = hidden_prime
-                    hypothesis.last_token = k
-
-                # Increment token counter.
-                symbols_added += 1
-                time_idx += skip
-                need_loop = skip == 0
-
-            # this rarely happens, but we manually increment the `skip` number
-            # if blank is emitted and duration=0 is predicted. This prevents possible
-            # infinite loops.
-            if skip == 0:
-                skip = 1
-
-            if self.preserve_alignments:
-                # convert Ti-th logits into a torch array
-                hypothesis.alignments.append([])  # blank buffer for next timestep
-
-            if self.preserve_frame_confidence:
-                hypothesis.frame_confidence.append([])  # blank buffer for next timestep
-
-            if symbols_added == self.max_symbols:
-                time_idx += 1
-
-        # Remove trailing empty list of Alignments
-        if self.preserve_alignments:
-            if len(hypothesis.alignments[-1]) == 0:
-                del hypothesis.alignments[-1]
-
-        # Remove trailing empty list of per-frame confidence
-        if self.preserve_frame_confidence:
-            if len(hypothesis.frame_confidence[-1]) == 0:
-                del hypothesis.frame_confidence[-1]
-
-        # Unpack the hidden states
-        hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
+            logits = self.joint.joint(useful_frames, decoder_embs)
+            logits = logits.view([-1, logits.shape[-1]])
+            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+            token_sequence = k_t.tolist()
+            hypothesis.y_sequence = token_sequence
 
         return hypothesis
 

@@ -22,6 +22,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
+import random
 
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text import _AudioTextDataset
@@ -95,9 +96,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             self.decoder2 = EncDecRNNTModel.from_config_dict(self.cfg.decoder2)
             self.joint2 = EncDecRNNTModel.from_config_dict(self.cfg.joint2)
             self.run_backward = True
-
-        print("HERE self.cfg", self.cfg)
-        print("HERE backward", self.run_backward)
 
         # Setup RNNT Loss
         loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
@@ -741,19 +739,68 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
-            # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            if self.run_backward:
-                joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
-                joint2 = torch.flip(joint2, dims=(1,))
-                B, T, U, _ = joint.shape
-                rand2 = torch.rand([B, T - 1, U, 1]).to(joint.device)
-                rand2 = torch.gt(rand2, 0.5)
-                joint[:,:-1,:,:] = joint[:,:-1,:,:] + joint2[:,1:,:,:] * rand2
+            if not self.run_backward:
+                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+                loss_value = self.loss(
+                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                )
+            else:
+                if random.uniform(0.0, 1.0) < 0.5:
+                    rand = random.uniform(0.0, 1.0)
+                    joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
 
-            loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
-            )
+                    joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
+
+#                    joint2 = torch.flip(joint2, dims=(1,))
+#                    joint[:,:-1,:,:self.joint.num_extra_outputs] = (joint[:,:-1,:,:self.joint.num_extra_outputs] + joint2[:,1:,:,:self.joint.num_extra_outputs]) / 2.0
+#                    joint2[:,1:,:,:self.joint.num_extra_outputs] = joint[:,:-1,:,:self.joint.num_extra_outputs]
+#                    joint2 = torch.flip(joint2, dims=(1,))
+
+                    forward_loss_value = self.loss(
+                        log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                    )
+                    
+                    backward_loss_value = self.loss(
+                        log_probs=joint2, targets=transcript2, input_lengths=encoded_len, target_lengths=target_length
+                    )
+
+                    loss_value = rand * forward_loss_value + backward_loss_value * (1- rand)
+                else:
+                    rand = random.uniform(0.0, 1.0)
+                    joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+
+                    joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
+
+                    joint2 = torch.flip(joint2, dims=(1,))
+                    joint[:,:-1,:,:self.joint.num_extra_outputs] = (joint[:,:-1,:,:self.joint.num_extra_outputs] + joint2[:,1:,:,:self.joint.num_extra_outputs]) / 2.0
+                    joint2[:,1:,:,:self.joint.num_extra_outputs] = joint[:,:-1,:,:self.joint.num_extra_outputs]
+                    joint2 = torch.flip(joint2, dims=(1,))
+
+                    forward_loss_value = self.loss(
+                        log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                    )
+                    
+                    backward_loss_value = self.loss(
+                        log_probs=joint2, targets=transcript2, input_lengths=encoded_len, target_lengths=target_length
+                    )
+
+                    loss_value = rand * forward_loss_value + backward_loss_value * (1- rand)
+
+#                    joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+#                    B, T, U, _ = joint.shape
+#                    joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
+#                    joint2 = torch.flip(joint2, dims=(1,))
+#                    rand2 = torch.rand([B, T - 1, U, 1]).to(joint.device)
+#                    rand2 = torch.gt(rand2, 0.5)
+#                    if random.uniform(0.0, 1.0) < 0.5:
+#                        joint[:,:-1,:,:] = joint[:,:-1,:,:] + joint2[:,1:,:,:] * rand2
+#                    else:
+#                        joint[:,:-1,:,:] = joint[:,:-1,:,:] + joint2[:,1:,:,:]
+#                    loss_value = self.loss(
+#                        log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+#                    )
+
+
 
             # Add auxiliary losses, if registered
             loss_value = self.add_auxiliary_losses(loss_value)
