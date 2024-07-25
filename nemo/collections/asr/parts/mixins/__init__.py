@@ -14,6 +14,7 @@
 
 from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
 from nemo.collections.asr.parts.mixins.interctc_mixin import InterCTCMixin
+from nemo.collections.asr.parts.mixins.prompting import PromptingMixin
 from nemo.collections.asr.parts.mixins.mixins import (
     ASRAdapterModelMixin,
     ASRBPEMixin,

@@ -24,6 +24,7 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text import _AudioTextDataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
+from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextLhotseDataset, get_prompt_format_fn
 from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
@@ -491,8 +492,19 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
 
         logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
 
-    def _setup_dataloader_from_config(self, config: Optional[Dict]):
+    def _setup_dataloader_from_config(self, config: Optional[Dict], inference: bool = False):
         if config.get("use_lhotse"):
+            if self.prompt_format:
+                return get_lhotse_dataloader_from_config(
+                    config,
+                    global_rank=self.global_rank,
+                    world_size=self.world_size,
+                    dataset=PromptedAudioToTextLhotseDataset(
+                        tokenizer=self.tokenizer,
+                        prompt_format_fn=get_prompt_format_fn(self.prompt_format),
+                        inference=inference,
+                    ),
+                )
             return get_lhotse_dataloader_from_config(
                 config,
                 global_rank=self.global_rank,
@@ -591,5 +603,5 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         if config.get("augmentor"):
             dl_config['augmentor'] = config.get("augmentor")
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
+        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config), inference=True)
         return temporary_datalayer

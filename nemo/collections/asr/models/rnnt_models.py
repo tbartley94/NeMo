@@ -27,6 +27,7 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text import _AudioTextDataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToCharDALIDataset, DALIOutputs
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
+from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextLhotseDataset, get_prompt_format_fn
 from nemo.collections.asr.losses.rnnt import RNNTLoss, resolve_rnnt_default_loss_name
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
@@ -36,6 +37,7 @@ from nemo.collections.asr.parts.mixins import (
     ASRTranscriptionMixin,
     TranscribeConfig,
     TranscriptionReturnType,
+    PromptingMixin
 )
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
@@ -48,7 +50,7 @@ from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, L
 from nemo.utils import logging
 
 
-class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTranscriptionMixin):
+class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTranscriptionMixin, PromptingMixin):
     """Base class for encoder decoder RNNT-based models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -57,6 +59,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         self.world_size = 1
         if trainer is not None:
             self.world_size = trainer.world_size
+
+        # Setup lhotse prompting, if needed
+        self._maybe_setup_prompting(cfg)
 
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -135,6 +140,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # Setup encoder adapters (from ASRAdapterModelMixin)
         self.setup_adapters()
+
+        # setup prompting adapters
+        # #TODO make this work off adapters
+        self._maybe_setup_prompt_adapters(cfg)
 
     def setup_optim_normalization(self):
         """
@@ -429,12 +438,29 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
 
-    def _setup_dataloader_from_config(self, config: Optional[Dict]):
+    def _setup_dataloader_from_config(self, config: Optional[Dict], inference=False):
         # Automatically inject args from model config to dataloader config
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='labels')
 
         if config.get("use_lhotse"):
+            if self.prompt_format:
+                return get_lhotse_dataloader_from_config(
+                    config,
+                    global_rank=self.global_rank,
+                    world_size=self.world_size,
+                    dataset=PromptedAudioToTextLhotseDataset(
+                        tokenizer=make_parser(
+                            labels=config.get('labels', None),
+                            name=config.get('parser', 'en'),
+                            unk_id=config.get('unk_index', -1),
+                            blank_id=config.get('blank_index', -1),
+                            do_normalize=config.get('normalize_transcripts', False),
+                        ),
+                        prompt_format_fn=get_prompt_format_fn(self.prompt_format),
+                        inference=inference,
+                    ),
+                )
             return get_lhotse_dataloader_from_config(
                 config,
                 global_rank=self.global_rank,
@@ -570,7 +596,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # preserve config
         self._update_dataset_config(dataset_name='validation', config=val_data_config)
 
-        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config)
+        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config, inference=True)
 
     def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
         """
@@ -593,7 +619,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # preserve config
         self._update_dataset_config(dataset_name='test', config=test_data_config)
 
-        self._test_dl = self._setup_dataloader_from_config(config=test_data_config)
+        self._test_dl = self._setup_dataloader_from_config(config=test_data_config, inference=True)
 
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
@@ -607,6 +633,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "prompt": NeuralType(('B', 'T'), LengthsType(), optional=True),
+            "prompt_length": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
     @property
@@ -618,7 +646,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None, prompt=None, prompt_length=None
     ):
         """
         Forward pass of the model. Note that for RNNT Models, the forward pass of the model is a 3 step process,
@@ -666,7 +694,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
-        encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+        processed_signal, processed_signal_length = self.apply_prompt(processed_signal, processed_signal_length, prompt, prompt_length, loc="preprocessor")
+
+        encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length, prompt=prompt, prompt_length=prompt_length, model=self)
+
+        encoded, encoded_len = self.apply_prompt(encoded, encoded_len, prompt, prompt_length, loc="encoder")
+
         return encoded, encoded_len
 
     # PTL-specific methods
@@ -675,13 +708,19 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if AccessMixin.is_access_enabled(self.model_guid):
             AccessMixin.reset_registry(self)
 
-        signal, signal_len, transcript, transcript_len = batch
+        signal, signal_len, transcript, transcript_len = batch[:4]
+        if self.prompt_format:
+            prompt, prompt_length = batch[4:]
+            transcript = transcript[:,prompt.shape[1]:]
+            transcript_len = transcript_len - prompt_length
+        else:
+            prompt, prompt_length = None, None
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_length=prompt_length)
         del signal
 
         # During training, loss must be computed, so decoder forward is necessary
@@ -769,13 +808,19 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         return {'loss': loss_value}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len, sample_id = batch
+        signal, signal_len, transcript, transcript_len = batch[:4]
+        if self.prompt_format:
+            prompt, prompt_length = batch[4:]
+            transcript = transcript[:,prompt.shape[1]:]
+            transcript_len = transcript_len - prompt_length
+        else:
+            prompt, prompt_length = None, None
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_length=prompt_length)
         del signal
 
         best_hyp_text, all_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
@@ -786,13 +831,19 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         return list(zip(sample_id, best_hyp_text))
 
     def validation_pass(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len = batch
+        signal, signal_len, transcript, transcript_len = batch[:4]
+        if self.prompt_format:
+            prompt, prompt_length = batch[4:]
+            transcript = transcript[:,prompt.shape[1]:]
+            transcript_len = transcript_len - prompt_length
+        else:
+            prompt, prompt_length = None, None
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_length=prompt_length)
         del signal
 
         tensorboard_logs = {}
@@ -963,7 +1014,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if config.get("augmentor"):
             dl_config['augmentor'] = config.get("augmentor")
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
+        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config), inference=True)
         return temporary_datalayer
 
     def on_after_backward(self):

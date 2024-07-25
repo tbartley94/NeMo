@@ -20,7 +20,7 @@ from lhotse.dataset import AudioSamples
 from lhotse.dataset.collation import collate_vectors
 
 from nemo.collections.asr.data.audio_to_text_lhotse import TokenizerWrapper
-from nemo.collections.common.prompts.canary import CanaryPromptFormatter
+from nemo.collections.common.prompts import CanaryPromptFormatter, ParakeetPromptFormatter
 from nemo.collections.common.tokenizers import CanaryTokenizer, TokenizerSpec
 from nemo.collections.common.tokenizers.canary_tokenizer import CANARY_SPECIAL_TOKENIZER
 
@@ -64,13 +64,10 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
         prompts_with_answers_lens = torch.tensor([t.size(0) for t in prompts_with_answers], dtype=torch.long)
         prompts_with_answers = collate_vectors(prompts_with_answers, padding_value=self.padding_value)
 
-        if self.inference:
-            prompts = [torch.as_tensor(t) for t in prompts]
-            prompts_lens = torch.tensor([t.size(0) for t in prompts], dtype=torch.long)
-            prompts = collate_vectors(prompts, padding_value=self.padding_value)
-        else:
-            prompts = None
-            prompts_lens = None
+        prompts = [torch.as_tensor(t) for t in prompts]
+        prompts_lens = torch.tensor([t.size(0) for t in prompts], dtype=torch.long)
+        prompts = collate_vectors(prompts, padding_value=self.padding_value)
+
 
         return audio, audio_lens, prompts_with_answers, prompts_with_answers_lens, prompts, prompts_lens
 
@@ -154,6 +151,76 @@ def canary(
             # For compatbility with inference options, this slot is now called "task".
             cut.custom["task"] = cut.custom["taskname"]
             missing_keys.remove("task")
+        if missing_keys:
+            raise RuntimeError(
+                f"We found cut with ID {cut.id} that is missing the following keys: {missing_keys}"
+                f"Please ensure that every utterance in the input manifests contains these keys."
+            )
+
+        encoded = formatter.encode_dialog(
+            turns=[
+                dict(
+                    role="user",
+                    slots={
+                        **{slot: cut.custom[slot] for slot in expected_slots},
+                        formatter.PROMPT_LANGUAGE_SLOT: CANARY_SPECIAL_TOKENIZER,
+                    },
+                ),
+                dict(
+                    role="assistant",
+                    slots={
+                        "text": ' '.join(s.text for s in cut.supervisions),
+                        formatter.PROMPT_LANGUAGE_SLOT: cut.supervisions[0].language,
+                    },
+                ),
+            ]
+        )
+        prompts_with_answers.append(encoded["input_ids"])
+        prompts.append(encoded["context_ids"])
+
+    return prompts_with_answers, prompts
+
+
+@registered_prompt_format_fn
+def parakeet(
+    cuts: CutSet, tokenizer: TokenizerWrapper, inference: bool = False
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """
+    Prepend and append control tokens to the token sequence as per Canary format.
+
+    We use the following special tokens:
+    * <|nopnc|>
+    * <|pnc|>
+    * <|LANG|> - for each supported language.
+    * <|nospeech|>
+
+    The prompt format syntax is as follows:
+
+        [ <|nospeech|> | <|LANG|> <|LANG|> [ <|pnc|> | <|nopnc|> ] TEXT ]
+
+    Where expression ``[ a | b ]`` denotes expression ``a`` or expression ``b``, and can be nested.
+    Note that ``<|LANG|>`` appears twice: the first occurrence is for the "source" language
+    (i.e., spoken language in the recording) and the second occurrence is for the "target" language
+    (i.e., the language in which we are going to output the text).
+    """
+
+    assert isinstance(
+        tokenizer._tokenizer, CanaryTokenizer
+    ), "To use 'canary' prompt format, you must use the CanaryTokenizer."
+    formatter = ParakeetPromptFormatter(tokenizer._tokenizer)
+
+    prompts_with_answers, prompts = [], []
+    for cut in cuts:
+        if isinstance(cut, MixedCut):
+            cut = cut._first_non_padding_cut
+        if not isinstance(cut, MonoCut):
+            raise TypeError(
+                f"Expected input audio to have a single channel (required MonoCut/MixedCut, but we received: {cut=})"
+            )
+
+        # first, validate the utterance
+        expected_slots = set(formatter.get_slots("user"))
+        missing_keys = expected_slots - set(cut.custom)
         if missing_keys:
             raise RuntimeError(
                 f"We found cut with ID {cut.id} that is missing the following keys: {missing_keys}"

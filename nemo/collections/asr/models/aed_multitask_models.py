@@ -31,7 +31,7 @@ from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
 )
 from nemo.collections.asr.metrics import BLEU, WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
-from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRModuleMixin, ASRTranscriptionMixin
+from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRModuleMixin, ASRTranscriptionMixin, PromptingMixin
 from nemo.collections.asr.parts.mixins.transcription import (
     GenericTranscriptionType,
     InternalTranscribeConfig,
@@ -115,7 +115,7 @@ class MultiTaskTranscriptionConfig(TranscribeConfig):
         self.prompt = parse_multitask_prompt(self.prompt)
 
 
-class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModuleMixin, ASRTranscriptionMixin):
+class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModuleMixin, ASRTranscriptionMixin, PromptingMixin):
     """Base class for AED multi-task models"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -125,17 +125,11 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         cfg = model_utils.maybe_update_config_version(cfg)
         _config_check(cfg)
 
-        self.prompt_format = cfg.prompt_format
         self.sample_rate = cfg.sample_rate
         self._setup_tokenizer(cfg.tokenizer)
+        self._maybe_setup_prompting(cfg)
 
         super().__init__(cfg=cfg, trainer=trainer)
-
-        prompt_cls = PromptFormatter.resolve(self.prompt_format)
-        self.prompt = prompt_cls(
-            tokenizer=self.tokenizer,
-            defaults=OmegaConf.to_container(pd) if (pd := cfg.get("prompt_defaults")) is not None else None,
-        )
 
         # Setup audio preprocessor
         self.preprocessor = EncDecMultiTaskModel.from_config_dict(self.cfg.preprocessor)

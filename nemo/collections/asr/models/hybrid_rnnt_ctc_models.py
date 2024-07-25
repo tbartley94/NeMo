@@ -348,13 +348,19 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
-        signal, signal_len, transcript, transcript_len = batch
+        signal, signal_len, transcript, transcript_len = batch[:4]
+        if self.prompt_format:
+            prompt, prompt_length = batch[4:]
+            transcript = transcript[:,prompt.shape[1]:]
+            transcript_len = transcript_len - prompt_length
+        else:
+            prompt, prompt_length = None, None
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_length=prompt_length)
         del signal
 
         # During training, loss must be computed, so decoder forward is necessary
@@ -465,13 +471,19 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # TODO: add support for CTC decoding
-        signal, signal_len, transcript, transcript_len, sample_id = batch
+        signal, signal_len, transcript, transcript_len = batch[:4]
+        if self.prompt_format:
+            prompt, prompt_length = batch[4:]
+            transcript = transcript[:,prompt.shape[1]:]
+            transcript_len = transcript_len - prompt_length
+        else:
+            prompt, prompt_length = None, None
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_length=prompt_length)
         del signal
 
         best_hyp_text, all_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(

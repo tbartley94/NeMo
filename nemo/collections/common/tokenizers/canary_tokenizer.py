@@ -71,7 +71,7 @@ class CanaryTokenizer(AggregateTokenizer):
             return self._tokenize_special_prompt(text)
         if text.endswith(CANARY_EOS):
             return super().text_to_ids(text[: -len(CANARY_EOS)], lang_id) + [self.eos_id]
-        return super().text_to_ids(text[-len(CANARY_EOS) :], lang_id)
+        return super().text_to_ids(text, lang_id)
 
     def _tokenize_special_prompt(self, text: str) -> list[int]:
         """
@@ -82,9 +82,8 @@ class CanaryTokenizer(AggregateTokenizer):
         Required because otherwise self.text_to_ids() returns a different result than what Canary had been trained with.
         """
         ans = []
-        assert text.count('>') == 5, f"Expected exactly 5 special tokens in Canary's prompt, got: {text}."
-        assert text.startswith(CANARY_BOS), text
-        for _ in range(5):
+        assert text.count('>') == 5 or text.count('>') == 3, f"Expected exactly 5 special tokens in Canary's prompt, got: {text}."
+        for _ in range(text.count('>')):
             token = text[: text.find(">") + 1]
             ans.append(self.special_tokens[token])
             text = text[len(token) :]

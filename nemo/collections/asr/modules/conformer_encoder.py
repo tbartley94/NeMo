@@ -46,7 +46,7 @@ from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
-from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType
+from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType, VoidType
 from nemo.utils import logging
 
 __all__ = ['ConformerEncoder']
@@ -202,6 +202,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "prompt": NeuralType(('B', 'T'), LengthsType(), optional=True),
+                "prompt_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+                "model":NeuralType(tuple('B'), VoidType(), optional=True),
             }
         )
 
@@ -499,7 +502,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
     @typecheck()
     def forward(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, prompt=None, prompt_length=None, model=None
     ):
         self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
         return self.forward_internal(
@@ -508,10 +511,13 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            prompt=prompt,
+            prompt_length=prompt_length,
+            model=model,
         )
 
     def forward_internal(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, prompt=None, prompt_length=None, model=None
     ):
         if length is None:
             length = audio_signal.new_full(
@@ -588,7 +594,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 cache_last_channel=cache_last_channel_cur,
                 cache_last_time=cache_last_time_cur,
             )
-
+            audio_signal, length = model.apply_prompt(audio_signal.transpose(1,2), length, prompt, prompt_length, str(lth))
+            audio_signal = audio_signal.transpose(1,2)
             if cache_last_channel_cur is not None:
                 (audio_signal, cache_last_channel_cur, cache_last_time_cur) = audio_signal
                 cache_last_channel_next.append(cache_last_channel_cur)

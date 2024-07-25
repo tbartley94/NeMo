@@ -29,10 +29,11 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text import _AudioTextDataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToCharDALIDataset, DALIOutputs
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
+from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextLhotseDataset, get_prompt_format_fn
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
-from nemo.collections.asr.parts.mixins import ASRModuleMixin, ASRTranscriptionMixin, InterCTCMixin, TranscribeConfig
+from nemo.collections.asr.parts.mixins import ASRModuleMixin, ASRTranscriptionMixin, InterCTCMixin, TranscribeConfig, PromptingMixin
 from nemo.collections.asr.parts.mixins.transcription import GenericTranscriptionType, TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
@@ -47,7 +48,7 @@ from nemo.utils import logging
 __all__ = ['EncDecCTCModel']
 
 
-class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMixin, ASRTranscriptionMixin):
+class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMixin, ASRTranscriptionMixin, PromptingMixin):
     """Base class for encoder decoder CTC-based models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -56,6 +57,9 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         self.world_size = 1
         if trainer is not None:
             self.world_size = trainer.world_size
+
+        # Setup lhotse prompting, if needed
+        self._maybe_setup_prompting(cfg)
 
         super().__init__(cfg=cfg, trainer=trainer)
         self.preprocessor = EncDecCTCModel.from_config_dict(self._cfg.preprocessor)
@@ -117,6 +121,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
         # Adapter modules setup (from ASRAdapterModelMixin)
         self.setup_adapters()
+
+        self._maybe_setup_prompt_adapters(cfg)
 
     def transcribe(
         self,
@@ -274,12 +280,23 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
         logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
 
-    def _setup_dataloader_from_config(self, config: Optional[Dict]):
+    def _setup_dataloader_from_config(self, config: Optional[Dict], inference=False):
         # Automatically inject args from model config to dataloader config
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='labels')
 
         if config.get("use_lhotse"):
+            if self.prompt_format:
+                return get_lhotse_dataloader_from_config(
+                    config,
+                    global_rank=self.global_rank,
+                    world_size=self.world_size,
+                    dataset=PromptedAudioToTextLhotseDataset(
+                        tokenizer=self.tokenizer,
+                        prompt_format_fn=get_prompt_format_fn(self.prompt_format),
+                        inference=inference,
+                    ),
+                )
             return get_lhotse_dataloader_from_config(
                 config,
                 global_rank=self.global_rank,
@@ -414,7 +431,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         # preserve config
         self._update_dataset_config(dataset_name='validation', config=val_data_config)
 
-        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config)
+        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config, inference=True)
 
     def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
         """
@@ -437,7 +454,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         # preserve config
         self._update_dataset_config(dataset_name='test', config=test_data_config)
 
-        self._test_dl = self._setup_dataloader_from_config(config=test_data_config)
+        self._test_dl = self._setup_dataloader_from_config(config=test_data_config, inference=True)
 
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
@@ -450,6 +467,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "prompt": NeuralType(('B', 'T'), LengthsType(), optional=True),
+            "prompt_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "sample_id": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
@@ -463,7 +482,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None, prompt=None, prompt_length=None
     ):
         """
         Forward pass of the model.
@@ -501,10 +520,14 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
+        
+        processed_signal, processed_signal_length = self.apply_prompt(processed_signal, processed_signal_length, prompt, prompt_length, loc="preprocessor")
 
         encoder_output = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         encoded = encoder_output[0]
         encoded_len = encoder_output[1]
+
+        encoded, encoded_len = self.apply_prompt(encoded, encoded_len, prompt, prompt_length, loc="encoder")
         log_probs = self.decoder(encoder_output=encoded)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
@@ -523,13 +546,21 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
-        signal, signal_len, transcript, transcript_len = batch
+        signal, signal_len, transcript, transcript_len = batch[:4]
+        if self.prompt_format:
+            prompt, prompt_length = batch[4:]
+            transcript = transcript[:,prompt.shape[1]:]
+            transcript_len = transcript_len - prompt_length
+        else:
+            prompt, prompt_length = None, None
+
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
                 processed_signal=signal, processed_signal_length=signal_len
             )
         else:
-            log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+            log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_length=prompt_length)
+
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
@@ -594,13 +625,19 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
-        signal, signal_len, transcript, transcript_len = batch
+        signal, signal_len, transcript, transcript_len = batch[:4]
+        if self.prompt_format:
+            prompt, prompt_length = batch[4:]
+            transcript = transcript[:,prompt_length:]
+            transcript_len = transcript_len - prompt_length
+        else:
+            prompt, prompt_length = None, None
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
                 processed_signal=signal, processed_signal_length=signal_len
             )
         else:
-            log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+            log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_length=prompt_length)
 
         loss_value = self.loss(
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
@@ -666,7 +703,10 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
     """ Transcription related methods """
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
-        logits, logits_len, greedy_predictions = self.forward(input_signal=batch[0], input_signal_length=batch[1])
+        if self.prompt_format:
+            logits, logits_len, greedy_predictions = self.forward(input_signal=batch[0], input_signal_length=batch[1], prompt=batch[-2], prompt_length=batch[-1])
+        else:
+            logits, logits_len, greedy_predictions = self.forward(input_signal=batch[0], input_signal_length=batch[1])
         output = dict(logits=logits, logits_len=logits_len)
         del greedy_predictions
         return output
@@ -751,7 +791,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         if config.get("augmentor"):
             dl_config['augmentor'] = config.get("augmentor")
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
+        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config), inference=True)
         return temporary_datalayer
 
     @classmethod
