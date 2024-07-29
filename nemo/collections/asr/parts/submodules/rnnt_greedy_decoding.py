@@ -2541,8 +2541,8 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-#        return self._greedy_decode_original(x, out_len, partial_hypotheses)
-        return self._greedy_decode_forward(x, out_len, partial_hypotheses)
+        return self._greedy_decode_original(x, out_len, partial_hypotheses)
+#        return self._greedy_decode_forward(x, out_len, partial_hypotheses)
 #        return self._greedy_decode_backward(x, out_len, partial_hypotheses)
 
     @torch.no_grad()
@@ -2585,27 +2585,33 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         useful_logits = []
         time_idx = 0
         out_len = out_len.item()
-        probs = []
+#        probs = []
         while time_idx < out_len:
             k = k_t[time_idx]
-            p = v_t[time_idx].item()
-            p_d = v_d[time_idx].item()
-            p = int(p * 100) / 100
-            p_d = int(p_d * 100) / 100
+#            p = v_t[time_idx].item()
+#            p_d = v_d[time_idx].item()
+#            p = int(p * 100) / 100
+#            p_d = int(p_d * 100) / 100
             skip = k_d[time_idx] + 1
+#            skip = 1
             if k != self._blank_index:
                 # Append token to label set, update RNN state.
                 hypothesis.y_sequence.append(k)
                 hypothesis.timestep.append(time_idx)
                 useful_logits.append(logits[time_idx,:])
-                probs.append(p)
-                top_k = torch.topk(logits[time_idx,:-len(self.durations)], k=2)
-                second_k = top_k.indices[1].item()
+#                probs.append(p)
+#                top_k = torch.topk(logits[time_idx,:-len(self.durations)], k=2)
+#                second_k = top_k.indices[1].item()
 
-                print("HERE", time_idx, p, p_d, k, second_k)
+#                print("HERE", time_idx, p, p_d, k, second_k)
 
 #            else:
-#                print("HEREblank", time_idx, p, p_d, k)
+#                useful_logits.append(logits[time_idx,:])
+#                probs.append(p)
+#                top_k = torch.topk(logits[time_idx,:-len(self.durations)], k=2)
+#                second_k = top_k.indices[1].item()
+#
+#                print("HERE", time_idx, p, p_d, k, second_k)
 
             time_idx += skip
 
@@ -2614,7 +2620,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
 #        print('timestep is', hypothesis.timestep)
 #        print('timestep prob is', probs) 
 
-        for t in range(10):
+        for t in range(0):
             timestep_tensor = torch.LongTensor(hypothesis.timestep).to(x.device)
             useful_frames = x[timestep_tensor,::]  # reversed
 
