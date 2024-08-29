@@ -2541,8 +2541,8 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-        return self._greedy_decode_original(x, out_len, partial_hypotheses)
-#        return self._greedy_decode_forward(x, out_len, partial_hypotheses)
+#        return self._greedy_decode_original(x, out_len, partial_hypotheses)
+        return self._greedy_decode_forward(x, out_len, partial_hypotheses)
 #        return self._greedy_decode_backward(x, out_len, partial_hypotheses)
 
     @torch.no_grad()
