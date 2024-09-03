@@ -68,34 +68,15 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # Update config values required by components dynamically
         with open_dict(self.cfg.decoder):
             self.cfg.decoder.vocab_size = len(self.cfg.labels)
-        if 'decoder2' in self.cfg:
-            with open_dict(self.cfg.decoder2):
-                self.cfg.decoder2.vocab_size = len(self.cfg.labels)
 
         with open_dict(self.cfg.joint):
             self.cfg.joint.num_classes = len(self.cfg.labels)
             self.cfg.joint.vocabulary = self.cfg.labels
             self.cfg.joint.jointnet.encoder_hidden = self.cfg.model_defaults.enc_hidden
             self.cfg.joint.jointnet.pred_hidden = self.cfg.model_defaults.pred_hidden
-        if 'joint2' in self.cfg:
-            with open_dict(self.cfg.joint2):
-                self.cfg.joint2.num_classes = len(self.cfg.labels)
-                self.cfg.joint2.vocabulary = self.cfg.labels
-                self.cfg.joint2.jointnet.encoder_hidden = self.cfg.model_defaults.enc_hidden
-                self.cfg.joint2.jointnet.pred_hidden = self.cfg.model_defaults.pred_hidden
 
         self.decoder = EncDecRNNTModel.from_config_dict(self.cfg.decoder)
         self.joint = EncDecRNNTModel.from_config_dict(self.cfg.joint)
-
-        self.decoder2 = None
-        self.joint2 = None
-        self.run_backward = False
-        if 'decoder2' in self.cfg:
-            assert 'joint2' in self.cfg
-            assert not self.joint.fuse_loss_wer
-            self.decoder2 = EncDecRNNTModel.from_config_dict(self.cfg.decoder2)
-            self.joint2 = EncDecRNNTModel.from_config_dict(self.cfg.joint2)
-            self.run_backward = True
 
         # Setup RNNT Loss
         loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
@@ -119,22 +100,12 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         self.cfg.decoding = self.set_decoding_type_according_to_loss(self.cfg.decoding)
         # Setup decoding objects
-        if not self.run_backward:
-            self.decoding = RNNTDecoding(
-                decoding_cfg=self.cfg.decoding,
-                decoder=self.decoder,
-                joint=self.joint,
-                vocabulary=self.joint.vocabulary,
-            )
-        else:
-            self.decoding = RNNTDecoding(
-                decoding_cfg=self.cfg.decoding,
-                decoder=self.decoder,
-                decoder2=self.decoder2,
-                joint=self.joint,
-                joint2=self.joint2,
-                vocabulary=self.joint.vocabulary,
-            )
+        self.decoding = RNNTDecoding(
+            decoding_cfg=self.cfg.decoding,
+            decoder=self.decoder,
+            joint=self.joint,
+            vocabulary=self.joint.vocabulary,
+        )
         # Setup WER calculation
         self.wer = WER(
             decoding=self.decoding,
@@ -716,19 +687,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # During training, loss must be computed, so decoder forward is necessary
         decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-        if self.run_backward:
-            signal_len_list = signal_len.tolist()
-            transcript_len_list = transcript_len.tolist()
-
-            encoded2 = encoded * 1.0
-            for i in range(len(signal_len_list)):
-                encoded2[i,:,:encoded_len[i]] = torch.flip(encoded2[i,:,:encoded_len[i]], dims=(-1,))
-
-            transcript2 = transcript * 1
-            for i in range(len(transcript_len_list)):
-                transcript2[i,:transcript_len_list[i]] = torch.flip(transcript2[i,:transcript_len_list[i]], dims=(-1,))
-
-            decoder2, target_length2, states2 = self.decoder2(targets=transcript2, target_length=transcript_len)
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
@@ -739,68 +697,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # If experimental fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
-            if not self.run_backward:
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-                loss_value = self.loss(
-                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
-                )
-            else:
-                if random.uniform(0.0, 1.0) < 0.5:
-                    rand = random.uniform(0.0, 1.0)
-                    joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-
-                    joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
-
-#                    joint2 = torch.flip(joint2, dims=(1,))
-#                    joint[:,:-1,:,:self.joint.num_extra_outputs] = (joint[:,:-1,:,:self.joint.num_extra_outputs] + joint2[:,1:,:,:self.joint.num_extra_outputs]) / 2.0
-#                    joint2[:,1:,:,:self.joint.num_extra_outputs] = joint[:,:-1,:,:self.joint.num_extra_outputs]
-#                    joint2 = torch.flip(joint2, dims=(1,))
-
-                    forward_loss_value = self.loss(
-                        log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
-                    )
-                    
-                    backward_loss_value = self.loss(
-                        log_probs=joint2, targets=transcript2, input_lengths=encoded_len, target_lengths=target_length
-                    )
-
-                    loss_value = rand * forward_loss_value + backward_loss_value * (1- rand)
-                else:
-                    rand = random.uniform(0.0, 1.0)
-                    joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-
-                    joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
-
-                    joint2 = torch.flip(joint2, dims=(1,))
-                    joint[:,:-1,:,:self.joint.num_extra_outputs] = (joint[:,:-1,:,:self.joint.num_extra_outputs] + joint2[:,1:,:,:self.joint.num_extra_outputs]) / 2.0
-                    joint2[:,1:,:,:self.joint.num_extra_outputs] = joint[:,:-1,:,:self.joint.num_extra_outputs]
-                    joint2 = torch.flip(joint2, dims=(1,))
-
-                    forward_loss_value = self.loss(
-                        log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
-                    )
-                    
-                    backward_loss_value = self.loss(
-                        log_probs=joint2, targets=transcript2, input_lengths=encoded_len, target_lengths=target_length
-                    )
-
-                    loss_value = rand * forward_loss_value + backward_loss_value * (1- rand)
-
-#                    joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-#                    B, T, U, _ = joint.shape
-#                    joint2 = self.joint2(encoder_outputs=encoded2, decoder_outputs=decoder2)
-#                    joint2 = torch.flip(joint2, dims=(1,))
-#                    rand2 = torch.rand([B, T - 1, U, 1]).to(joint.device)
-#                    rand2 = torch.gt(rand2, 0.5)
-#                    if random.uniform(0.0, 1.0) < 0.5:
-#                        joint[:,:-1,:,:] = joint[:,:-1,:,:] + joint2[:,1:,:,:] * rand2
-#                    else:
-#                        joint[:,:-1,:,:] = joint[:,:-1,:,:] + joint2[:,1:,:,:]
-#                    loss_value = self.loss(
-#                        log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
-#                    )
-
-
+            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+            loss_value = self.loss(
+                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            )
 
             # Add auxiliary losses, if registered
             loss_value = self.add_auxiliary_losses(loss_value)

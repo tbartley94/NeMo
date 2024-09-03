@@ -158,8 +158,6 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         self,
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
-        decoder_model2: rnnt_abstract.AbstractRNNTDecoder,
-        joint_model2: rnnt_abstract.AbstractRNNTJoint,
         blank_index: int,
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
@@ -169,8 +167,6 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         super().__init__()
         self.decoder = decoder_model
         self.joint = joint_model
-        self.decoder2 = decoder_model2
-        self.joint2 = joint_model2
 
         self._blank_index = blank_index
         self._SOS = blank_index  # Start of single index
@@ -225,30 +221,6 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
 
         # output: [B, 1, K]
         return self.decoder.predict(label, hidden, add_sos=add_sos, batch_size=batch_size)
-
-    def _joint_step_2(self, enc, pred, log_normalize: Optional[bool] = None):
-        """
-        Common joint step based on AbstractRNNTJoint implementation.
-
-        Args:
-            enc: Output of the Encoder model. A torch.Tensor of shape [B, 1, H1]
-            pred: Output of the Decoder model. A torch.Tensor of shape [B, 1, H2]
-            log_normalize: Whether to log normalize or not. None will log normalize only for CPU.
-
-        Returns:
-             logits of shape (B, T=1, U=1, V + 1)
-        """
-        with torch.no_grad():
-            logits = self.joint2.joint(enc, pred)
-
-            if log_normalize is None:
-                if not logits.is_cuda:  # Use log softmax only if on CPU
-                    logits = logits.log_softmax(dim=len(logits.shape) - 1)
-            else:
-                if log_normalize:
-                    logits = logits.log_softmax(dim=len(logits.shape) - 1)
-
-        return logits
 
     def _joint_step(self, enc, pred, log_normalize: Optional[bool] = None):
         """
@@ -2466,10 +2438,9 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         self,
         decoder_model: rnnt_abstract.AbstractRNNTDecoder,
         joint_model: rnnt_abstract.AbstractRNNTJoint,
-        decoder_model2: rnnt_abstract.AbstractRNNTDecoder,
-        joint_model2: rnnt_abstract.AbstractRNNTJoint,
         blank_index: int,
         durations: list,
+        decoding_type: str,
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
@@ -2479,8 +2450,6 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         super().__init__(
             decoder_model=decoder_model,
             joint_model=joint_model,
-            decoder_model2=decoder_model2,
-            joint_model2=joint_model2,
             blank_index=blank_index,
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
@@ -2488,6 +2457,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             confidence_method_cfg=confidence_method_cfg,
         )
         self.durations = durations
+        self.decoding_type = decoding_type
         self.include_duration_confidence = include_duration_confidence
 
     @typecheck()
@@ -2541,13 +2511,19 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-#        return self._greedy_decode_original(x, out_len, partial_hypotheses)
-        return self._greedy_decode_forward(x, out_len, partial_hypotheses)
-#        return self._greedy_decode_backward(x, out_len, partial_hypotheses)
+        if self.decoding_type == 'original':
+            return self._greedy_decode_original(x, out_len, partial_hypotheses)
+        else:
+            print("a, b", self.decoding_type)
+            a, b = self.decoding_type.split('-')
+            print("a, b", self.decoding_type, a, b)
+            assert a == 'nar'
+            b = int(b)
+            return self._greedy_decode_nar(x, out_len, partial_hypotheses, b)
 
     @torch.no_grad()
-    def _greedy_decode_forward(
-        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
+    def _greedy_decode_nar(
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None, loop_count = 0,
     ):
         # x: [T, 1, D]
         # out_len: [seq_len]
@@ -2585,42 +2561,20 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         useful_logits = []
         time_idx = 0
         out_len = out_len.item()
-#        probs = []
         while time_idx < out_len:
             k = k_t[time_idx]
-#            p = v_t[time_idx].item()
-#            p_d = v_d[time_idx].item()
-#            p = int(p * 100) / 100
-#            p_d = int(p_d * 100) / 100
             skip = k_d[time_idx] + 1
-#            skip = 1
             if k != self._blank_index:
                 # Append token to label set, update RNN state.
                 hypothesis.y_sequence.append(k)
                 hypothesis.timestep.append(time_idx)
                 useful_logits.append(logits[time_idx,:])
-#                probs.append(p)
-#                top_k = torch.topk(logits[time_idx,:-len(self.durations)], k=2)
-#                second_k = top_k.indices[1].item()
-
-#                print("HERE", time_idx, p, p_d, k, second_k)
-
-#            else:
-#                useful_logits.append(logits[time_idx,:])
-#                probs.append(p)
-#                top_k = torch.topk(logits[time_idx,:-len(self.durations)], k=2)
-#                second_k = top_k.indices[1].item()
-#
-#                print("HERE", time_idx, p, p_d, k, second_k)
 
             time_idx += skip
 
             hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
-#        print('timestep token is', hypothesis.y_sequence)
-#        print('timestep is', hypothesis.timestep)
-#        print('timestep prob is', probs) 
 
-        for t in range(0):
+        for t in range(loop_count):
             timestep_tensor = torch.LongTensor(hypothesis.timestep).to(x.device)
             useful_frames = x[timestep_tensor,::]  # reversed
 
@@ -2637,130 +2591,6 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             v_t, k_t = logits[:,:-len(self.durations)].max(-1)
             token_sequence = k_t.tolist()
             hypothesis.y_sequence = token_sequence
-
-        return hypothesis
-
-
-
-    @torch.no_grad()
-    def _greedy_decode_backward(
-        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
-    ):
-        # x: [T, 1, D]
-        # out_len: [seq_len]
-
-        # Initialize blank state and empty label set in Hypothesis
-        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
-
-        if partial_hypotheses is not None:
-            hypothesis.last_token = partial_hypotheses.last_token
-            hypothesis.y_sequence = (
-                partial_hypotheses.y_sequence.cpu().tolist()
-                if isinstance(partial_hypotheses.y_sequence, torch.Tensor)
-                else partial_hypotheses.y_sequence
-            )
-            if partial_hypotheses.dec_state is not None:
-                hypothesis.dec_state = self.decoder.batch_concat_states([partial_hypotheses.dec_state])
-                hypothesis.dec_state = _states_to_device(hypothesis.dec_state, x.device)
-
-        if self.preserve_alignments:
-            # Alignments is a 2-dimensional dangling list representing T x U
-            hypothesis.alignments = [[]]
-
-        if self.preserve_frame_confidence:
-            hypothesis.frame_confidence = [[]]
-
-        logits_forward = self.joint.nar_joint(x)
-        logits = self.joint2.nar_joint(x)
-        logits_forward = logits_forward.view([-1, logits.shape[-1]])
-        logits = logits.view([-1, logits.shape[-1]])
-        logits[:,:-len(self.durations)] += logits_forward[:,:-len(self.durations)]
-        logits[:,:-len(self.durations)] = torch.nn.functional.softmax(logits[:,:-len(self.durations)], dim=-1)
-        logits[:,-len(self.durations):] = torch.nn.functional.softmax(logits[:,-len(self.durations):], dim=-1)
-        v_t, k_t = logits[:,:-len(self.durations)].max(-1)
-        v_d, k_d = logits[:,-len(self.durations):].max(-1)
-        k_t = k_t.tolist()
-        k_d = k_d.tolist()
-
-        useful_logits = []
-        out_len = out_len.item()
-        time_idx = out_len - 1
-
-        probs = []
-
-        while time_idx >= 0:
-            k = k_t[time_idx]
-            p = v_t[time_idx].item()
-            p_d = v_d[time_idx].item()
-            p = int(p * 100) / 100
-            p_d = int(p_d * 100) / 100
-# taking mean of neiboring frames
-            skip = k_d[time_idx] + 1
-            if k != self._blank_index:
-                # Append token to label set, update RNN state.
-                hypothesis.y_sequence.append(k)
-                hypothesis.timestep.append(time_idx)
-                useful_logits.append(logits[time_idx,:])
-                probs.append(p)
-                top_k = torch.topk(logits[time_idx,:-len(self.durations)], k=2)
-                second_k = top_k.indices[1].item()
-
-                print("HERE", time_idx, p, p_d, k, second_k)
-
-            time_idx -= skip
-
-            hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
-
-        hypothesis.y_sequence = hypothesis.y_sequence[::-1]
-        hypothesis.timestep = hypothesis.timestep[::-1]
-
-#        print('timestep token is', hypothesis.y_sequence)
-#        print('timestep is', hypothesis.timestep)
-#        print('timestep prob is', probs) 
-
-
-        for t in range(0):
-            reversed_timestep_tensor = torch.flip(torch.LongTensor(hypothesis.timestep).to(x.device), dims=(0,))  # reversed
-            reversed_useful_frames = x[reversed_timestep_tensor,::]  # reversed
-
-            reversed_token_sequence = hypothesis.y_sequence[::-1]  # reversed
-            reversed_token_sequence = [self._blank_index] + reversed_token_sequence[:-1]
-            reversed_token_sequence_tensor = torch.LongTensor(reversed_token_sequence).to(x.device)
-            reversed_token_sequence_tensor = reversed_token_sequence_tensor.view([1, -1])
-
-            reversed_decoder_embs = self.decoder2.prediction.fast_inference_run(reversed_token_sequence_tensor)  # [T, D]
-            reversed_decoder_embs = reversed_decoder_embs.view([reversed_decoder_embs.shape[1], 1, -1]) # [T, 1, D]
-
-#            reversed_logits1 = self.joint.nar_joint(reversed_useful_frames) #, reversed_decoder_embs)
-            reversed_logits2 = self.joint2.joint(reversed_useful_frames, reversed_decoder_embs)
-#            reversed_logits2 += reversed_logits1
-            reversed_logits2 = reversed_logits2.view([-1, reversed_logits2.shape[-1]])
-
-            logits = torch.flip(reversed_logits2, dims=(0,))
-#            logits1 = torch.cat(useful_logits, dim=0)
-#            logits1 = logits1.view([-1, logits2.shape[-1]])
-#            logits = logits1 + logits2
-            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
-            token_sequence = k_t.tolist()
-            hypothesis.y_sequence = token_sequence
-
-#        for t in range(3):
-#            timestep_tensor = torch.LongTensor(hypothesis.timestep).to(x.device)
-#            useful_frames = x[timestep_tensor,::]  # reversed
-#
-#            token_sequence = hypothesis.y_sequence
-#            token_sequence = [self._blank_index] + token_sequence[:-1]
-#            token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
-#            token_sequence_tensor = token_sequence_tensor.view([1, -1])
-#
-#            decoder_embs = self.decoder.prediction.fast_inference_run(token_sequence_tensor)  # [T, D]
-#            decoder_embs = decoder_embs.view([decoder_embs.shape[1], 1, -1]) # [T, 1, D]
-#
-#            logits = self.joint.joint(useful_frames, decoder_embs)
-#            logits = logits.view([-1, logits.shape[-1]])
-#            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
-#            token_sequence = k_t.tolist()
-#            hypothesis.y_sequence = token_sequence
 
         return hypothesis
 
