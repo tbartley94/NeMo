@@ -159,6 +159,12 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         return g, target_length, state
 
+    @torch.no_grad
+    def fast_inference_run(self, y: torch.Tensor):
+        out = self.prediction.fast_inference_run(y)
+        print("HERE stateless g is", out.shape)
+        return out
+
     def predict(
         self,
         y: Optional[torch.Tensor] = None,
@@ -683,6 +689,22 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         g = g.transpose(1, 2)  # (B, D, U)
 
         return g, target_length, states
+
+    @torch.no_grad
+    def fast_inference_run(self, y: torch.Tensor):
+        # state maintenance is unnecessary during training forward call
+        # to get state, use .predict() method.
+        if self._rnnt_export:
+            add_sos = False
+        else:
+            add_sos = True
+
+        g, states = self.predict(y, state=None, add_sos=add_sos)  # (B, U, D)
+
+        g = g[:,1:,:]
+        print("HERE stateful g is", g.shape)
+
+        return g
 
     def predict(
         self,

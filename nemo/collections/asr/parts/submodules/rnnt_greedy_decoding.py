@@ -2583,7 +2583,8 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
             token_sequence_tensor = token_sequence_tensor.view([1, -1])
 
-            decoder_embs = self.decoder.prediction.fast_inference_run(token_sequence_tensor)  # [T, D]
+            print("HERE token_sequence_tensor is", token_sequence_tensor.shape)
+            decoder_embs = self.decoder.fast_inference_run(token_sequence_tensor)  # [T, D]
             decoder_embs = decoder_embs.view([decoder_embs.shape[1], 1, -1]) # [T, 1, D]
 
             logits = self.joint.joint(useful_frames, decoder_embs)
