@@ -2517,9 +2517,86 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             print("a, b", self.decoding_type)
             a, b = self.decoding_type.split('-')
             print("a, b", self.decoding_type, a, b)
-            assert a == 'nar'
             b = int(b)
-            return self._greedy_decode_nar(x, out_len, partial_hypotheses, b)
+            if a == 'nar':
+                return self._greedy_decode_nar(x, out_len, partial_hypotheses, b)
+            elif a == 'nar_t':
+                return self._greedy_decode_nar_t(x, out_len, partial_hypotheses, b)
+
+
+    @torch.no_grad()
+    def _greedy_decode_nar_t(
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None, loop_count = 0,
+    ):
+        # x: [T, 1, D]
+        # out_len: [seq_len]
+
+        # Initialize blank state and empty label set in Hypothesis
+        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
+
+        if partial_hypotheses is not None:
+            assert False
+
+        if self.preserve_alignments:
+            # Alignments is a 2-dimensional dangling list representing T x U
+            hypothesis.alignments = [[]]
+
+        if self.preserve_frame_confidence:
+            hypothesis.frame_confidence = [[]]
+
+        logits = self.joint.nar_joint(x)
+        logits = logits.view([-1, logits.shape[-1]])
+        logits[:,:-len(self.durations)] = torch.nn.functional.softmax(logits[:,:-len(self.durations)], dim=-1)
+        logits[:,-len(self.durations):] = torch.nn.functional.softmax(logits[:,-len(self.durations):], dim=-1)
+        v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+        v_d, k_d = logits[:,-len(self.durations):].max(-1)
+        k_t = k_t.tolist()
+        k_d = k_d.tolist()
+
+        useful_logits = []
+        time_idx = 0
+        out_len = out_len.item()
+        non_blank_indices = []
+        indices_to_last_non_blank = []
+        all_timestamps = []
+        all_output = []
+        output = []
+
+        while time_idx < out_len:
+            k = k_t[time_idx]
+            skip = k_d[time_idx] + 1
+            all_timestamps.append(time_idx)
+            all_output.append(k)
+            indices_to_last_non_blank.append(len(output))
+
+            if k != self._blank_index:
+                # Append token to label set, update RNN state.
+                output.append(k)
+                non_blank_indices.append(len(all_timestamps) - 1)
+
+            time_idx += skip
+
+        for t in range(loop_count):
+            token_sequence = [[self._blank_index] + output]
+            token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
+
+            decoded = self.decoder.fast_inference_run(token_sequence_tensor)
+
+            timestamp_tensor = torch.LongTensor(all_timestamps).to(x.device)
+            useful_frames = x[timestamp_tensor,::]
+
+            decoded = decoded.view([decoded.shape[1], 1, -1]) # [T, 1, D]
+            decoded_extended = decoded[indices_to_last_non_blank,:,:]
+
+            logits = self.joint.joint(useful_frames, decoded_extended)
+            logits = logits.view([-1, logits.shape[-1]])
+            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+            all_output = k_t.tolist()
+            output = k_t[non_blank_indices].tolist()
+
+        hypothesis.y_sequence = output
+
+        return hypothesis
 
     @torch.no_grad()
     def _greedy_decode_nar(
