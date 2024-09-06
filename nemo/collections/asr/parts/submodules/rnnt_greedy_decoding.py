@@ -2511,7 +2511,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-        if self.decoding_type == 'original':
+        if self.decoding_type == 'original' or self.decoding_type == None:
             return self._greedy_decode_original(x, out_len, partial_hypotheses)
         else:
             print("a, b", self.decoding_type)
@@ -2560,6 +2560,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         indices_to_last_non_blank = []
         all_timestamps = []
         all_output = []
+#        upgrade_timestamp = []  # True if the previous prediction is not a blank, and therefore we can
         output = []
 
         while time_idx < out_len:
@@ -2576,13 +2577,14 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
 
             time_idx += skip
 
+
         for t in range(loop_count):
+            timestamp_tensor = torch.LongTensor(all_timestamps).to(x.device)
             token_sequence = [[self._blank_index] + output]
             token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
 
             decoded = self.decoder.fast_inference_run(token_sequence_tensor)
 
-            timestamp_tensor = torch.LongTensor(all_timestamps).to(x.device)
             useful_frames = x[timestamp_tensor,::]
 
             decoded = decoded.view([decoded.shape[1], 1, -1]) # [T, 1, D]
@@ -2591,8 +2593,25 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             logits = self.joint.joint(useful_frames, decoded_extended)
             logits = logits.view([-1, logits.shape[-1]])
             v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+
+            v_d, k_d = logits[:,-len(self.durations):].max(-1)
+
             all_output = k_t.tolist()
             output = k_t[non_blank_indices].tolist()
+
+            all_durations = k_d.tolist()
+            new_all_timestamps = [all_timestamps[0]]
+            for i in range(1, len(all_timestamps)):
+                if all_output[i - 1] != self._blank_index:
+                    new_all_timestamps.append(all_timestamps[i - 1] + all_durations[i] + 1)
+                else:
+                    new_all_timestamps.append(all_timestamps[i])
+
+            print("all_timestamps:     ", all_timestamps)
+            print("new_all_timestamps: ", new_all_timestamps)
+            print("all_output:         ", all_output)
+
+            all_timestamps = new_all_timestamps
 
         hypothesis.y_sequence = output
 
