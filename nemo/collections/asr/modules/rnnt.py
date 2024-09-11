@@ -702,7 +702,6 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         g, states = self.predict(y, state=None, add_sos=add_sos)  # (B, U, D)
 
         g = g[:,1:,:]
-        print("HERE stateful g is", g.shape)
 
         return g
 
@@ -1631,6 +1630,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             rand = torch.rand([B, 1, U, 1]).to(g.device)
             rand = torch.gt(rand, 0.5)
             g = g * rand
+
+            g += torch.normal(g * 0, g * 0 + 0.2)
+
 #        else:
 #            g = g * 0
 

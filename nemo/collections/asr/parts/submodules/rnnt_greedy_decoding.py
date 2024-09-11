@@ -2511,12 +2511,11 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
+#        self.decoding_type = 'nar-2'
         if self.decoding_type == 'original' or self.decoding_type == None:
             return self._greedy_decode_original(x, out_len, partial_hypotheses)
         else:
-            print("a, b", self.decoding_type)
             a, b = self.decoding_type.split('-')
-            print("a, b", self.decoding_type, a, b)
             b = int(b)
             if a == 'nar':
                 return self._greedy_decode_nar(x, out_len, partial_hypotheses, b)
@@ -2679,7 +2678,6 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
             token_sequence_tensor = token_sequence_tensor.view([1, -1])
 
-            print("HERE token_sequence_tensor is", token_sequence_tensor.shape)
             decoder_embs = self.decoder.fast_inference_run(token_sequence_tensor)  # [T, D]
             decoder_embs = decoder_embs.view([decoder_embs.shape[1], 1, -1]) # [T, 1, D]
 
