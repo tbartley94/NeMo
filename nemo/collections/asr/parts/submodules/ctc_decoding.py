@@ -214,6 +214,8 @@ class AbstractCTCDecoding(ConfidenceMixin):
         self.word_seperator = self.cfg.get('word_seperator', ' ')
 
         possible_strategies = ['greedy', 'greedy_batched', 'beam', 'pyctcdecode', 'flashlight']
+        if self.cfg.strategy == 'greedy_batch':
+            self.cfg.strategy = 'greedy_batched'
         if self.cfg.strategy not in possible_strategies:
             raise ValueError(f"Decoding strategy must be one of {possible_strategies}. Given {self.cfg.strategy}")
 

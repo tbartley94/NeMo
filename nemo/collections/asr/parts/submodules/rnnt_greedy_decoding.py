@@ -2511,7 +2511,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-#        self.decoding_type = 'nar-2'
+#        self.decoding_type = 'nar-0'
         if self.decoding_type == 'original' or self.decoding_type == None:
             return self._greedy_decode_original(x, out_len, partial_hypotheses)
         else:
@@ -2646,10 +2646,10 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
 
         logits = self.joint.nar_joint(x)
         logits = logits.view([-1, logits.shape[-1]])
-        logits[:,:-len(self.durations)] = torch.nn.functional.softmax(logits[:,:-len(self.durations)], dim=-1)
-        logits[:,-len(self.durations):] = torch.nn.functional.softmax(logits[:,-len(self.durations):], dim=-1)
+#        logits[:,:-len(self.durations)] = torch.nn.functional.softmax(logits[:,:-len(self.durations)], dim=-1)
+#        logits[:,-len(self.durations):] = torch.nn.functional.softmax(logits[:,-len(self.durations):], dim=-1)
         v_t, k_t = logits[:,:-len(self.durations)].max(-1)
-        v_d, k_d = logits[:,-len(self.durations):].max(-1)
+        v_d, k_d = logits[:,-len(self.durations):].max(-1)  # get rid of 0 duration
         k_t = k_t.tolist()
         k_d = k_d.tolist()
 
@@ -2658,12 +2658,16 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         out_len = out_len.item()
         while time_idx < out_len:
             k = k_t[time_idx]
-            skip = k_d[time_idx] + 1
+            skip = self.durations[k_d[time_idx]]
+#            print("SKIP IS", skip)
+            if skip == 0:
+                skip += 1
             if k != self._blank_index:
                 # Append token to label set, update RNN state.
                 hypothesis.y_sequence.append(k)
                 hypothesis.timestep.append(time_idx)
-                useful_logits.append(logits[time_idx,:])
+                if loop_count > 0:
+                    useful_logits.append(logits[time_idx,:])
 
             time_idx += skip
 
@@ -2789,6 +2793,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
                 # Increment token counter.
                 symbols_added += 1
                 time_idx += skip
+#                print("SKIP IS", skip)
                 need_loop = skip == 0
 
             # this rarely happens, but we manually increment the `skip` number

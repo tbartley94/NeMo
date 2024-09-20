@@ -1631,11 +1631,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             rand = torch.gt(rand, 0.5)
             g = g * rand
 
-            g += torch.normal(g * 0, g * 0 + 0.2)
-
-#        else:
-#            g = g * 0
-
         inp = f + g  # [B, T, U, H]
 
         del f, g
@@ -1645,6 +1640,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             inp = self.forward_enabled_adapters(inp)
 
         res = self.joint_net(inp)  # [B, T, U, V + 1]
+
+#        if self.training:
+#            rand2 = ~rand
+#            res[:,:,:,self._vocab_size+1:self._vocab_size+2] = rand2 * -999.0 + rand * res[:,:,:,self._vocab_size+1:self._vocab_size+2]
 
         del inp
 
