@@ -45,6 +45,14 @@ from nemo.core.neural_types import AcousticEncodedRepresentation, HypothesisType
 from nemo.utils import logging
 
 
+
+@dataclass
+class State:
+    alpha: float = None
+    token: int = None
+    dec_state: torch.Tensor = None
+    backtrack: int = None
+
 def pack_hypotheses(
     hypotheses: List[rnnt_utils.Hypothesis],
     logitlen: torch.Tensor,
@@ -2511,7 +2519,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-#        self.decoding_type = 'nar-0'
+        self.decoding_type = 'markov-3'
         if self.decoding_type == 'original' or self.decoding_type == None:
             return self._greedy_decode_original(x, out_len, partial_hypotheses)
         else:
@@ -2519,102 +2527,10 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             b = int(b)
             if a == 'nar':
                 return self._greedy_decode_nar(x, out_len, partial_hypotheses, b)
-            elif a == 'nar_t':
-                return self._greedy_decode_nar_t(x, out_len, partial_hypotheses, b)
+            if a == 'markov':
+                return self._iter_markov_decode(x, out_len, partial_hypotheses, b)
 
 
-    @torch.no_grad()
-    def _greedy_decode_nar_t(
-        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None, loop_count = 0,
-    ):
-        # x: [T, 1, D]
-        # out_len: [seq_len]
-
-        # Initialize blank state and empty label set in Hypothesis
-        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
-
-        if partial_hypotheses is not None:
-            assert False
-
-        if self.preserve_alignments:
-            # Alignments is a 2-dimensional dangling list representing T x U
-            hypothesis.alignments = [[]]
-
-        if self.preserve_frame_confidence:
-            hypothesis.frame_confidence = [[]]
-
-        logits = self.joint.nar_joint(x)
-        logits = logits.view([-1, logits.shape[-1]])
-        logits[:,:-len(self.durations)] = torch.nn.functional.softmax(logits[:,:-len(self.durations)], dim=-1)
-        logits[:,-len(self.durations):] = torch.nn.functional.softmax(logits[:,-len(self.durations):], dim=-1)
-        v_t, k_t = logits[:,:-len(self.durations)].max(-1)
-        v_d, k_d = logits[:,-len(self.durations):].max(-1)
-        k_t = k_t.tolist()
-        k_d = k_d.tolist()
-
-        useful_logits = []
-        time_idx = 0
-        out_len = out_len.item()
-        non_blank_indices = []
-        indices_to_last_non_blank = []
-        all_timestamps = []
-        all_output = []
-#        upgrade_timestamp = []  # True if the previous prediction is not a blank, and therefore we can
-        output = []
-
-        while time_idx < out_len:
-            k = k_t[time_idx]
-            skip = k_d[time_idx] + 1
-            all_timestamps.append(time_idx)
-            all_output.append(k)
-            indices_to_last_non_blank.append(len(output))
-
-            if k != self._blank_index:
-                # Append token to label set, update RNN state.
-                output.append(k)
-                non_blank_indices.append(len(all_timestamps) - 1)
-
-            time_idx += skip
-
-
-        for t in range(loop_count):
-            timestamp_tensor = torch.LongTensor(all_timestamps).to(x.device)
-            token_sequence = [[self._blank_index] + output]
-            token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
-
-            decoded = self.decoder.fast_inference_run(token_sequence_tensor)
-
-            useful_frames = x[timestamp_tensor,::]
-
-            decoded = decoded.view([decoded.shape[1], 1, -1]) # [T, 1, D]
-            decoded_extended = decoded[indices_to_last_non_blank,:,:]
-
-            logits = self.joint.joint(useful_frames, decoded_extended)
-            logits = logits.view([-1, logits.shape[-1]])
-            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
-
-            v_d, k_d = logits[:,-len(self.durations):].max(-1)
-
-            all_output = k_t.tolist()
-            output = k_t[non_blank_indices].tolist()
-
-            all_durations = k_d.tolist()
-            new_all_timestamps = [all_timestamps[0]]
-            for i in range(1, len(all_timestamps)):
-                if all_output[i - 1] != self._blank_index:
-                    new_all_timestamps.append(all_timestamps[i - 1] + all_durations[i] + 1)
-                else:
-                    new_all_timestamps.append(all_timestamps[i])
-
-            print("all_timestamps:     ", all_timestamps)
-            print("new_all_timestamps: ", new_all_timestamps)
-            print("all_output:         ", all_output)
-
-            all_timestamps = new_all_timestamps
-
-        hypothesis.y_sequence = output
-
-        return hypothesis
 
     @torch.no_grad()
     def _greedy_decode_nar(
@@ -2645,14 +2561,14 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             hypothesis.frame_confidence = [[]]
 
         logits = self.joint.nar_joint(x)
+
         logits = logits.view([-1, logits.shape[-1]])
 #        logits[:,:-len(self.durations)] = torch.nn.functional.softmax(logits[:,:-len(self.durations)], dim=-1)
 #        logits[:,-len(self.durations):] = torch.nn.functional.softmax(logits[:,-len(self.durations):], dim=-1)
         v_t, k_t = logits[:,:-len(self.durations)].max(-1)
-        v_d, k_d = logits[:,-len(self.durations):].max(-1)  # get rid of 0 duration
+        v_d, k_d = logits[:,-len(self.durations):].max(dim=-1)  # get rid of 0 duration
         k_t = k_t.tolist()
         k_d = k_d.tolist()
-
         useful_logits = []
         time_idx = 0
         out_len = out_len.item()
@@ -2666,32 +2582,166 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
                 # Append token to label set, update RNN state.
                 hypothesis.y_sequence.append(k)
                 hypothesis.timestep.append(time_idx)
-                if loop_count > 0:
-                    useful_logits.append(logits[time_idx,:])
+                useful_logits.append(logits[time_idx,:].log_softmax(0).max(0)[0])
 
             time_idx += skip
 
-            hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
-
-        for t in range(loop_count):
+        for t in range(min(loop_count, len(hypothesis.y_sequence))):
             timestep_tensor = torch.LongTensor(hypothesis.timestep).to(x.device)
             useful_frames = x[timestep_tensor,::]  # reversed
-
             token_sequence = hypothesis.y_sequence
-            token_sequence = [self._blank_index] + token_sequence[:-1]
+
+            #print(token_sequence)
+            token_sequence = token_sequence[:-1]
             token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
             token_sequence_tensor = token_sequence_tensor.view([1, -1])
 
-            decoder_embs = self.decoder.fast_inference_run(token_sequence_tensor)  # [T, D]
+            decoder_embs, states = self.decoder.predict(token_sequence_tensor, state=None, add_sos=True)  # (B, U, D)
+            hypothesis.dec_state = states
+
             decoder_embs = decoder_embs.view([decoder_embs.shape[1], 1, -1]) # [T, 1, D]
 
             logits = self.joint.joint(useful_frames, decoder_embs)
             logits = logits.view([-1, logits.shape[-1]])
             v_t, k_t = logits[:,:-len(self.durations)].max(-1)
             token_sequence = k_t.tolist()
-            hypothesis.y_sequence = token_sequence
 
+            hypothesis.y_sequence = token_sequence
         return hypothesis
+    
+    def _init_t_matrix(self, t_probs):
+        U = t_probs.shape[0]
+        t_matrix =  {idx: {} for idx in range(U+1)}
+        for i in range(U):
+            t_matrix = self._update_t_matrix(t_matrix, t_probs[i], i)
+        return t_matrix
+
+    # assumes per time step logits
+    def _update_t_matrix(self, t_matrix, probs, t):
+        U = len(t_matrix)
+        for idx, n in enumerate(self.durations):
+            target = t + n
+            if n == 0:
+                target += 1
+            if target > U - 1:
+                target = U - 1 # send to final sentinel
+            # we add on in case multiple matches to state
+            if target in t_matrix[t]:
+                t_matrix[t][target] += probs[idx]
+            else:
+                t_matrix[t][target] = probs[idx]
+        return t_matrix
+
+    # runs single pass of markov loop
+    @torch.no_grad()
+    def _markov_decode(
+        self, e_matrix, t_matrix,
+    ):
+        U = len(e_matrix)
+
+        #vocab should be log_soft, duration should be regular prob
+        alphas = [-float("inf") for _ in range(U)]
+        alphas = torch.tensor(alphas, device=e_matrix.device)
+        alphas[0] = e_matrix[0]
+
+        backtrack = torch.tensor([-1 for _ in range(U)], device=e_matrix.device)
+
+        for t in range(1, U):
+            # Only need to consider up max durations back
+            start = max(t-max(self.durations), 0)
+            back_states = [_ for _ in range(start, t)]
+
+            a_prob = alphas[back_states]
+            e_prob = e_matrix[t]
+            t_prob = torch.stack([t_matrix[s][t] for s in back_states], dim=0)
+
+            updates = a_prob + torch.log(t_prob) + e_prob.view(1)
+
+            if updates.dim() == 0:
+                v_t, k_t = updates.squeeze(0), 0
+            else:
+                v_t, k_t = updates.max(dim=0)
+
+            if v_t > alphas[t]:
+                alphas[t] = v_t
+                backtrack[t] = back_states[k_t]
+        print(alphas[-1])
+        return backtrack, alphas
+
+    @torch.no_grad()
+    def _iter_markov_decode(
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None, loop_count = 0,
+    ):
+        # x: [T, 1, D]
+        # out_len: [seq_len]
+        
+        # Initialize blank state and empty label set in Hypothesis
+        U = x.shape[0]
+        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
+
+        logits = self.joint.nar_joint(x)
+        logits = logits.view([-1, logits.shape[-1]])
+
+        e_probs = logits[:,:-len(self.durations)].log_softmax(dim=-1)
+        v_t, k_t = e_probs.max(dim=-1)
+        e_matrix = torch.cat([v_t, torch.tensor([0.0], device=x.device)], dim=0) # add for sentinel token
+
+        t_probs = logits[:,-len(self.durations):].softmax(dim=-1)
+        t_matrix = self._init_t_matrix(t_probs)
+        backtrack, alphas = self._markov_decode(e_matrix, t_matrix)
+
+        for _ in range(loop_count):
+            new_k_t = torch.tensor([-1 for _ in range(U)], device=x.device)
+            new_e_matrix = []
+            dec_states = [None for _ in range(U)]
+
+            # updates
+            for t in range(U):
+                # get most likely previous from last time
+                prev = backtrack[t] # None is beginning                
+                # Can't pass blank to predictor
+                while prev > -1 and k_t[prev] == self._blank_index:
+                    prev = backtrack[prev]
+                last_token = k_t[prev].unsqueeze(0).unsqueeze(0) if prev != -1 else None
+                last_state = dec_states[prev] if prev != -1 else None
+
+                f = x.narrow(dim=0, start=t, length=1) 
+                g, last_state = self.decoder.predict(y=last_token, state=last_state, add_sos=False) 
+                g = g.view([g.shape[1], 1, -1]) # [T, 1, D]
+                
+                logits = self.joint.joint(f, g)
+                logits = logits.view([1, -1])
+
+                v_prob = logits[:,:-len(self.durations)].log_softmax(dim=-1)
+
+                new_e_matrix += [v_prob.max(dim=-1)[0]]
+
+                # update
+                dec_states[t] = last_state
+                new_k_t[t] = v_prob.argmax(dim=-1).item()
+                del f, g
+
+            k_t = new_k_t
+            new_e_matrix.append(torch.tensor([0.0], device=x.device).view(1))
+            e_matrix = torch.stack(new_e_matrix, dim = 0)
+        backtrack, alphas = self._markov_decode(e_matrix, t_matrix)
+
+        k_t = k_t.tolist()
+        backtrack = backtrack.tolist()
+
+        t = backtrack[-1]
+        while t != -1:
+            k = k_t[t]
+            if k != self._blank_index:
+                # Append token to label set, update RNN state.
+                hypothesis.y_sequence.append(k)
+                hypothesis.timestep.append(t)
+            t = backtrack[t]
+        hypothesis.y_sequence.reverse()
+        hypothesis.timestep.reverse()
+        # todo, cache previous passes and keep best performers
+        return hypothesis
+
 
     @torch.no_grad()
     def _greedy_decode_original(
