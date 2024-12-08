@@ -29,8 +29,11 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
 
+import k2
+
 import numpy as np
 import torch
+from collections import defaultdict
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
@@ -2465,6 +2468,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             confidence_method_cfg=confidence_method_cfg,
         )
         self.durations = durations
+        self.durations_tensor = torch.tensor(self.durations).to(next(decoder_model.parameters()).device)
         self.decoding_type = decoding_type
         self.include_duration_confidence = include_duration_confidence
 
@@ -2519,7 +2523,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-        self.decoding_type = 'markov-3'
+        self.decoding_type = 'k2-0'
         if self.decoding_type == 'original' or self.decoding_type == None:
             return self._greedy_decode_original(x, out_len, partial_hypotheses)
         else:
@@ -2529,6 +2533,8 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
                 return self._greedy_decode_nar(x, out_len, partial_hypotheses, b)
             if a == 'markov':
                 return self._iter_markov_decode(x, out_len, partial_hypotheses, b)
+            if a == 'k2':
+                return self._iter_k2_decode(x, out_len, partial_hypotheses, b)
 
 
 
@@ -2661,11 +2667,9 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
                 v_t, k_t = updates.squeeze(0), 0
             else:
                 v_t, k_t = updates.max(dim=0)
-
             if v_t > alphas[t]:
                 alphas[t] = v_t
                 backtrack[t] = back_states[k_t]
-        print(alphas[-1])
         return backtrack, alphas
 
     @torch.no_grad()
@@ -2676,10 +2680,9 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         # out_len: [seq_len]
         
         # Initialize blank state and empty label set in Hypothesis
-        U = x.shape[0]
+        U = out_len.item()
         hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
-
-        logits = self.joint.nar_joint(x)
+        logits = self.joint.nar_joint(x[:U])
         logits = logits.view([-1, logits.shape[-1]])
 
         e_probs = logits[:,:-len(self.durations)].log_softmax(dim=-1)
@@ -2687,46 +2690,13 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         e_matrix = torch.cat([v_t, torch.tensor([0.0], device=x.device)], dim=0) # add for sentinel token
 
         t_probs = logits[:,-len(self.durations):].softmax(dim=-1)
+        v_d, k_d = t_probs.max(dim=-1)
         t_matrix = self._init_t_matrix(t_probs)
-        backtrack, alphas = self._markov_decode(e_matrix, t_matrix)
 
-        for _ in range(loop_count):
-            new_k_t = torch.tensor([-1 for _ in range(U)], device=x.device)
-            new_e_matrix = []
-            dec_states = [None for _ in range(U)]
-
-            # updates
-            for t in range(U):
-                # get most likely previous from last time
-                prev = backtrack[t] # None is beginning                
-                # Can't pass blank to predictor
-                while prev > -1 and k_t[prev] == self._blank_index:
-                    prev = backtrack[prev]
-                last_token = k_t[prev].unsqueeze(0).unsqueeze(0) if prev != -1 else None
-                last_state = dec_states[prev] if prev != -1 else None
-
-                f = x.narrow(dim=0, start=t, length=1) 
-                g, last_state = self.decoder.predict(y=last_token, state=last_state, add_sos=False) 
-                g = g.view([g.shape[1], 1, -1]) # [T, 1, D]
-                
-                logits = self.joint.joint(f, g)
-                logits = logits.view([1, -1])
-
-                v_prob = logits[:,:-len(self.durations)].log_softmax(dim=-1)
-
-                new_e_matrix += [v_prob.max(dim=-1)[0]]
-
-                # update
-                dec_states[t] = last_state
-                new_k_t[t] = v_prob.argmax(dim=-1).item()
-                del f, g
-
-            k_t = new_k_t
-            new_e_matrix.append(torch.tensor([0.0], device=x.device).view(1))
-            e_matrix = torch.stack(new_e_matrix, dim = 0)
         backtrack, alphas = self._markov_decode(e_matrix, t_matrix)
 
         k_t = k_t.tolist()
+        k_d = k_d.tolist()
         backtrack = backtrack.tolist()
 
         t = backtrack[-1]
@@ -2737,8 +2707,150 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
                 hypothesis.y_sequence.append(k)
                 hypothesis.timestep.append(t)
             t = backtrack[t]
+
         hypothesis.y_sequence.reverse()
         hypothesis.timestep.reverse()
+
+        for t in range(min(loop_count, len(hypothesis.y_sequence))):
+            timestep_tensor = torch.LongTensor(hypothesis.timestep).to(x.device)
+            useful_frames = x[timestep_tensor,::]  # reversed
+            token_sequence = hypothesis.y_sequence
+
+            token_sequence = token_sequence[:-1]
+            token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
+            token_sequence_tensor = token_sequence_tensor.view([1, -1])
+
+            decoder_embs, states = self.decoder.predict(token_sequence_tensor, state=None, add_sos=True)  # (B, U, D)
+            hypothesis.dec_state = states
+
+            decoder_embs = decoder_embs.view([decoder_embs.shape[1], 1, -1]) # [T, 1, D]
+
+            logits = self.joint.joint(useful_frames, decoder_embs)
+            logits = logits.view([-1, logits.shape[-1]])
+            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+            token_sequence = k_t.tolist()
+
+            hypothesis.y_sequence = token_sequence
+        # todo, cache previous passes and keep best performers
+        return hypothesis
+
+    def _fsa_matrix(self, e_probs: torch.Tensor, t_probs: torch.Tensor, k: int = 2, q: int = 1) -> k2.Fsa:
+        L = t_probs.shape[0]
+        DEVICE = t_probs.device
+
+        # Select top-k arc_weights
+        arc_weights, arc_weights_idx = t_probs.topk(k, dim=1, sorted=False)
+
+        # Create initial fsa tensor
+        # Source states are origin timesteps
+        source = torch.arange(L, device=DEVICE)
+        source = source.unsqueeze(1).repeat(1, k)
+
+        # Destination states are target timesteps. Source -> source + duration
+        offset = self.durations_tensor[arc_weights_idx]
+        offset[offset == 0] = 1 # make 1 value for 0 duration
+
+        target = source + offset
+        target[target >= L] = L
+
+        source, target, arc_weights = source.flatten(), target.flatten(), arc_weights.flatten()
+
+        # Target timestep is labels for backtracking
+        labels = torch.where(target == L, -1, target)
+
+        # Create initial fsa tensor to remove redundant tensors
+        fsa = torch.stack([source, target, labels], dim=1)
+        fsa, indices = torch.unique(fsa, dim=0, return_inverse=True)
+
+        # Compress arc scores to skip redundancies. (Needed for final tokens and when using top-k)
+        t_scores = torch.zeros(fsa.shape[0], device=DEVICE)
+        t_scores.index_add_(0, indices, arc_weights)
+        t_scores = torch.log(t_scores) # convert back to log_softmax
+        t_scores = t_scores.flatten()
+
+        # Need to add emission scores.
+        # Create 'dummy' value for end state
+        e_scores, _ = e_probs.max(dim=1)
+        e_scores = torch.cat([e_scores, torch.zeros(1).to(DEVICE)], dim=0)
+        e_scores = e_scores[fsa[:,1]]
+
+        # Duplicate transition scores for beam search
+        #t_scores = t_scores.repeat(1, q)
+        scores = t_scores + e_scores
+
+        # fsa = fsa.repeat(1, 1, q)
+        # fsa, scores = fsa.view(-1, 3), scores.view(-1, 1)
+
+        # for fsa support need specific typing
+        fsa = fsa.type(torch.int32)
+        scores = scores.view(dtype=torch.int32) 
+        fsa = torch.cat([fsa, scores.unsqueeze(1)], dim=1)
+
+        # Create Fsa
+        fsa = k2.Fsa(fsa)
+        fsa = k2.arc_sort(fsa)
+        fsa = k2.create_fsa_vec([fsa])
+        return fsa
+
+
+
+    def _iter_k2_decode(
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None, loop_count = 0,
+    ):
+        # x: [T, 1, D]
+        # out_len: [seq_len]
+        
+        # Initialize blank state and empty label set in Hypothesis
+        U = out_len.item()
+        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
+        logits = self.joint.nar_joint(x[:U])
+        logits = logits.view([-1, logits.shape[-1]])
+
+        e_probs = logits[:,:-len(self.durations)].log_softmax(dim=-1)
+        v_t, k_t = e_probs.max(dim=-1)
+
+        t_probs = logits[:,-len(self.durations):].softmax(dim=-1)
+        v_d, k_d = t_probs.max(dim=-1)
+
+        fsa = self._fsa_matrix(e_probs, t_probs)
+
+        path = k2.shortest_path(fsa, True)
+        path = [0] + path.labels.tolist()[:-1] # don't need -1 at end
+
+        k_t = k_t.tolist()
+        k_d = k_d.tolist()
+
+        for p in path:
+            if k_t[p] != self._blank_index:
+                hypothesis.y_sequence.append(k_t[p])
+                hypothesis.timestep.append(p)
+
+        # should_be, alphas = self._iter_markov_decode(x, out_len)
+        # #print(set(hypothesis.timestep) - set(should_be), set(should_be) - set(hypothesis.timestep))
+        # if hypothesis.timestep != should_be:
+        #     print (set(hypothesis.timestep) - set(should_be), set(should_be) - set(hypothesis.timestep), alphas, len(alphas))
+        # #assert hypothesis.timestep == should_be, (set(hypothesis.timestep) - set(should_be), set(should_be) - set(hypothesis.timestep))
+
+        for t in range(min(loop_count, len(hypothesis.y_sequence))):
+            timestep_tensor = torch.LongTensor(hypothesis.timestep).to(x.device)
+            useful_frames = x[timestep_tensor, ::]  # reversed
+            token_sequence = hypothesis.y_sequence
+
+            token_sequence = token_sequence[:-1]
+            token_sequence_tensor = torch.LongTensor(token_sequence).to(x.device)
+            token_sequence_tensor = token_sequence_tensor.view([1, -1])
+
+            decoder_embs, states = self.decoder.predict(token_sequence_tensor, state=None, add_sos=True)  # (B, U, D)
+            hypothesis.dec_state = states
+
+            decoder_embs = decoder_embs.view([decoder_embs.shape[1], 1, -1]) # [T, 1, D]
+
+            logits = self.joint.joint(useful_frames, decoder_embs)
+            logits = logits.view([-1, logits.shape[-1]])
+            v_t, k_t = logits[:,:-len(self.durations)].max(-1)
+            token_sequence = k_t.tolist()
+
+            hypothesis.y_sequence = token_sequence
         # todo, cache previous passes and keep best performers
         return hypothesis
 
