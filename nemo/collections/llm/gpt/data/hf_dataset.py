@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -740,11 +740,11 @@ class _MockGPTDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx) -> Dict[str, list]:
         np_gen = np.random.default_rng(seed=(self.seed + idx))
-        tokens = np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64).tolist()
+        input_ids = np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64).tolist()
         labels = np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64).tolist()
 
         batch = {
-            "tokens": tokens,
+            "input_ids": input_ids,
             "labels": labels,
             "loss_mask": self.loss_mask,
             "position_ids": self.position_ids,
