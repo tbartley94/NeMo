@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, Dict, List, Literal, Optional, Union
+from collections import Counter
 
 import numpy as np
 import torch
@@ -90,7 +91,8 @@ def _config_check(cfg):
     if "lm_dec_hidden" not in cfg.model_defaults:
         raise ValueError("`cfg.model_defaults` must have `lm_dec_hidden` key !")
 
-def _get_bleu_tokenizers_from_cuts(cuts):
+
+def _get_custom_from_cuts(cuts):
     """
     Helper function for multi tokenizer BLEU evaluation.
     Looks for `bleu_tokenizer` property to pass to BLEU metric.
@@ -99,8 +101,7 @@ def _get_bleu_tokenizers_from_cuts(cuts):
         return c.custom.get("bleu_tokenizer", None)
     # Dataloader passes multiple types of cuts. Need to diambiguate to access custom.
     # TODO: resolve in lhotse backend.
-    return [_get_lang(c.first_non_padding_cut) if isinstance(c, MixedCut) else _get_lang(c) for c in cuts]
-
+    return [c.first_non_padding_cut.custom if isinstance(c, MixedCut) else c.custom for c in cuts]
 
 @dataclass
 class MultiTaskTranscriptionInternalConfig(InternalTranscribeConfig):
@@ -241,7 +242,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         bleu_tokenizer = self.cfg.get("bleu_tokenizer", "13a")
         multi_bleu_tokenizer = self.cfg.get("multi_bleu_tokenizer", False)
         self.bleu = BLEU(
-            self.decoding, tokenize=bleu_tokenizer, multi_tokenize=multi_bleu_tokenizer, log_prediction=False
+            self.decoding, tokenize=bleu_tokenizer, multi_tokenize=multi_bleu_tokenizer, log_prediction=self.cfg.get("log_prediction")
         )  # WER is handling logging
 
         # Setup encoder adapters (from ASRAdapterModelMixin)
@@ -727,37 +728,61 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
               return_all_metrics: bool,
         ):
 
-        self.wer.update(
-            predictions=encoded_states,
-            predictions_lengths=encoded_len,
-            targets=batch.transcript,
-            targets_lengths=batch.transcript_lens,
-            predictions_mask=encoded_mask,
-            input_ids=batch.prompt,
-        )
+        # Determine ASR vs AST samples
+        source_counter = Counter()
+        target_counter = Counter()
+        ast_indices, asr_indices,  = [], []
+        src_lang, tgt_lang, bleu_tokenizer = [], [], []
+        for idx, c in enumerate(_get_custom_from_cuts(batch.cuts)):
+            src_lang.append(c["source_lang"])
+            tgt_lang.append(c["target_lang"])
+            if src_lang[idx] != tgt_lang[idx]:
+                ast_indices.append(idx)
+                bleu_tokenizer.append(c.get("bleu_tokenizer", None))
+            else:
+                asr_indices.append(idx)
+            source_counter[f"{src_lang[idx]}_audio_samples"] += 1
+            target_counter[f"{tgt_lang[idx]}_text_samples"] += 1
+        
+        device = encoded_states.device
+        asr_indices_tensor = torch.tensor(asr_indices, device=device, dtype=torch.long)
+        ast_indices_tensor = torch.tensor(ast_indices, device=device, dtype=torch.long)
 
-        # TODO: Remove conditional once wer reflects bleu batch behavior.
-        wer, wer_num, wer_denom = self.wer.compute()
-        if return_all_metrics:
-            output_dict.update(
-                {f"{eval_prefix}_wer": wer, f"{eval_prefix}_wer_num": wer_num, f"{eval_prefix}_wer_denom": wer_denom}
+        if len(asr_indices) > 0:
+            self.wer.update(
+                predictions=encoded_states[asr_indices_tensor],
+                predictions_lengths=encoded_len[asr_indices_tensor],
+                targets=batch.transcript[asr_indices_tensor],
+                targets_lengths=batch.transcript_lens[asr_indices_tensor],
+                predictions_mask=encoded_mask[asr_indices_tensor],
+                input_ids=batch.prompt[asr_indices_tensor],
             )
-        else:
-            output_dict.update({f"{eval_prefix}_wer": wer})
-        self.wer.reset()
 
-        self.bleu.update(
-            predictions=encoded_states,
-            predictions_lengths=encoded_len,
-            targets=batch.transcript,
-            targets_lengths=batch.transcript_lens,
-            predictions_mask=encoded_mask,
-            input_ids=batch.prompt,
-            tokenizers=_get_bleu_tokenizers_from_cuts(batch.cuts) if self.bleu.multi_tokenize else None  # Pass None to use single tokenizer.
-        )
-        bleu_metrics = self.bleu.compute(prefix=f"{eval_prefix}_", return_all_metrics=return_all_metrics)
-        output_dict.update(bleu_metrics)
-        self.bleu.reset()
+            # TODO: Remove conditional once wer reflects bleu batch behavior.
+            wer, wer_num, wer_denom = self.wer.compute()
+            if return_all_metrics:
+                output_dict.update(
+                    {f"{eval_prefix}_wer": wer, f"{eval_prefix}_wer_num": wer_num, f"{eval_prefix}_wer_denom": wer_denom}
+                )
+            else:
+                output_dict.update({f"{eval_prefix}_wer": wer})
+            self.wer.reset()
+
+        if len(ast_indices) > 0:
+            self.bleu.update(
+                predictions=encoded_states[ast_indices_tensor],
+                predictions_lengths=encoded_len[ast_indices_tensor],
+                targets=batch.transcript[ast_indices_tensor],
+                targets_lengths=batch.transcript_lens[ast_indices_tensor],
+                predictions_mask=encoded_mask[ast_indices_tensor],
+                input_ids=batch.prompt[ast_indices_tensor],
+                tokenizers=bleu_tokenizer if self.bleu.multi_tokenize else None  # Pass None to use single tokenizer.
+            )
+            bleu_metrics = self.bleu.compute(prefix=f"{eval_prefix}_", return_all_metrics=return_all_metrics)
+            output_dict.update(bleu_metrics)
+            self.bleu.reset()
+        output_dict.update(source_counter)
+        output_dict.update(target_counter)
 
         return output_dict
 

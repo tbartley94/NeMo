@@ -172,7 +172,7 @@ class BLEU(SacreBLEUScore):
                 if self.log_prediction and ind == 0:
                     logging.info("\n")
                     logging.info(f"reference:{reference}")
-                    logging.info(f"predicted:{hypotheses[0]}")    
+                    logging.info(f"predicted:{hypotheses[ind].text}")    
 
 
     def compute(self, return_all_metrics=True, prefix="", suffix=""):
