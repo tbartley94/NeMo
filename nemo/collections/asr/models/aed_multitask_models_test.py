@@ -18,8 +18,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, Dict, List, Literal, Optional, Union
-from lhotse import CutSet
-from lhotse.cut import MixedCut
 import numpy as np
 import torch
 from lightning.pytorch import Trainer
@@ -73,18 +71,6 @@ def lens_to_mask(lens, max_length):
     arange = torch.arange(max_length, device=lens.device)
     mask = arange.expand(batch_size, max_length) < lens.unsqueeze(1)
     return mask
-
-def _get_bleu_tokenizers_from_samples(cuts):
-    """
-    Helper function for multi tokenizer BLEU evaluation.
-    Looks for `bleu_tokenizer` property to pass to BLEU metric.
-    """
-    def _get_lang(c):
-        return c.custom.get(BLEU_TOKENIZER, None)
-
-    # Dataloader passes multiple types of cuts. Need to diambiguate to access custom.
-    # TODO: resolve in lhotse backend.
-    return [_get_lang(c.first_non_padding_cut) if isinstance(c, MixedCut) else _get_lang(c) for c in cuts]
 
 def _config_check(cfg):
     if 'tokenizer' not in cfg:
@@ -235,19 +221,13 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         self.val_loss = GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True)
 
 
-        #self.metric = MultiTaskMetric(self.decoding, self.prompt, cfg.multitask_metrics_cfg)
-
-        # TODO: PytorchMetrics lets you join two metrics together to save compute.
-        # But need to make wer and bleu have same outputs first
-        self.wer = WER(self.decoding, log_prediction=self.cfg.get("log_prediction"))
-
-
-        # TODO: use a metric config to avoid explicit passing of args.
-        bleu_tokenizer = self.cfg.get("bleu_tokenizer", "13a")
-        multi_bleu_tokenizer = self.cfg.get("multi_bleu_tokenizer", False)
-        self.bleu = BLEU(
-            self.decoding, tokenize=bleu_tokenizer, multi_tokenize=multi_bleu_tokenizer, log_prediction=False
-        )  # WER is handling logging
+        log_prediction=self.cfg.get("log_prediction", False)
+        self.metric = MultiTaskMetric(
+            decoding=self.decoding, 
+            prompt=self.prompt, 
+            log_prediction=log_prediction,
+            cfg=cfg.multitask_metrics_cfg
+        )
 
         # Setup encoder adapters (from ASRAdapterModelMixin)
         self.setup_adapters()
@@ -732,27 +712,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         eval_prefix: Literal["val", "test", "training_batch"],
         return_all_metrics: bool,
     ):
-
-        self.wer.update(
-            predictions=encoded_states,
-            predictions_lengths=encoded_len,
-            targets=batch.transcript,
-            targets_lengths=batch.transcript_lens,
-            predictions_mask=encoded_mask,
-            input_ids=batch.prompt,
-        )
-
-        # TODO: Remove conditional once wer reflects bleu batch behavior.
-        wer, wer_num, wer_denom = self.wer.compute()
-        if return_all_metrics:
-            output_dict.update(
-                {f"{eval_prefix}_wer": wer, f"{eval_prefix}_wer_num": wer_num, f"{eval_prefix}_wer_denom": wer_denom}
-            )
-        else:
-            output_dict.update({f"{eval_prefix}_wer": wer})
-        self.wer.reset()
-
-        self.bleu.update(
+        self.metric.update(
             predictions=encoded_states,
             predictions_lengths=encoded_len,
             targets=batch.transcript,
@@ -760,11 +720,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             predictions_mask=encoded_mask,
             input_ids=batch.prompt,
             cuts=batch.cuts,
-            ),
-        bleu_metrics = self.bleu.compute(prefix=f"{eval_prefix}_", return_all_metrics=return_all_metrics)
-        output_dict.update(bleu_metrics)
-        self.bleu.reset()
-
+        )
+        output_dict.update(self.metric.compute(prefix=f"{eval_prefix}_", return_all_metrics=return_all_metrics))
+        self.metric.reset()
         return output_dict
 
     # PTL-specific methods

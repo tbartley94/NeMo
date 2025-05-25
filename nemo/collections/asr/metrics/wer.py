@@ -255,6 +255,7 @@ class WER(Metric):
         batch_dim_index=0,
         dist_sync_on_step=False,
         sync_on_compute=True,
+        **kwargs,
     ):
         super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
 
@@ -287,6 +288,7 @@ class WER(Metric):
 
         self.add_state("scores", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
         self.add_state("words", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
+        print(self.process_group)
 
     def update(
         self,
@@ -296,6 +298,7 @@ class WER(Metric):
         targets_lengths: torch.Tensor,
         predictions_mask: Optional[torch.Tensor] = None,
         input_ids: Optional[torch.Tensor] = None,
+        **kwargs,  # To allow easy swapping of metrics without worrying about var alignment.
     ):
         """
         Updates metric state.
@@ -327,8 +330,8 @@ class WER(Metric):
 
         if self.log_prediction:
             logging.info("\n")
-            logging.info(f"reference:{references[0]}")
-            logging.info(f"predicted:{hypotheses[0].text}")
+            logging.info(f"WER reference:{references[0]}")
+            logging.info(f"WER predicted:{hypotheses[0].text}")
 
         for h, r in zip(hypotheses, references):
             if isinstance(h, list):
@@ -346,7 +349,8 @@ class WER(Metric):
         self.scores = torch.tensor(scores, device=self.scores.device, dtype=self.scores.dtype)
         self.words = torch.tensor(words, device=self.words.device, dtype=self.words.dtype)
 
-    def compute(self):
+    def compute(self, return_all_metrics=False, prefix="", suffix=""):
+        print(self.process_group)
         scores = self.scores.detach().float()
         words = self.words.detach().float()
         return scores / words, scores, words

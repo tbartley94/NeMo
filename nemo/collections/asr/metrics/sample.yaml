@@ -1,0 +1,14 @@
+multitask_metrics_cfg:
+  log_predictions: true
+  batch_dim_index: 0
+  metrics:
+    wer:
+        _target_: nemo.collections.asr.metrics.WER
+        slots: 
+            taskname: "transcribe"
+            pnc: "true"
+    bleu:
+        _target_: nemo.collections.asr.metrics.BLEU  
+        slots: 
+            taskname: "transcribe"
+            pnc: "true"

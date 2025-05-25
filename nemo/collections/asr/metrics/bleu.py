@@ -18,18 +18,37 @@ import torch
 from torchmetrics.functional.text.bleu import _bleu_score_compute, _bleu_score_update
 from torchmetrics.text import SacreBLEUScore
 
+from lhotse import CutSet
+from lhotse.cut import MixedCut
+
 from nemo.collections.asr.parts.submodules.ctc_decoding import AbstractCTCDecoding
 from nemo.collections.asr.parts.submodules.multitask_decoding import AbstractMultiTaskDecoding
 from nemo.collections.asr.parts.submodules.rnnt_decoding import AbstractRNNTDecoding
 from nemo.utils import logging
 
-__all__ = ['BLEU']
+from lhotse import CutSet
+from lhotse.cut import MixedCut
 
+__all__ = ['BLEU', 'BLEU_TOKENIZER']
+
+# Keyword to avoid mispelling issues.
+BLEU_TOKENIZER="bleu_tokenizer"
+
+def _get_bleu_tokenizers_from_cuts(cuts):
+    """
+    Helper function for multi tokenizer BLEU evaluation.
+    Looks for `bleu_tokenizer` property to pass to BLEU metric.
+    """
+    def _get_lang(c):
+        return c.custom.get(BLEU_TOKENIZER, None)
+
+    # Dataloader passes multiple types of cuts. Need to diambiguate to access custom.
+    # TODO: resolve in lhotse backend.
+    return [_get_lang(c.first_non_padding_cut) if isinstance(c, MixedCut) else _get_lang(c) for c in cuts]
 
 def _move_dimension_to_the_front(tensor, dim_index):
     all_dims = list(range(tensor.ndim))
     return tensor.permute(*([dim_index] + all_dims[:dim_index] + all_dims[dim_index + 1 :]))
-
 
 class BLEU(SacreBLEUScore):
     """
@@ -92,6 +111,8 @@ class BLEU(SacreBLEUScore):
         log_prediction=True,
         batch_dim_index=0,
         dist_sync_on_step=False,
+        sync_on_compute=True,
+        **kwargs,
     ):
         self.log_prediction = log_prediction
         self.batch_dim_index = batch_dim_index
@@ -119,7 +140,8 @@ class BLEU(SacreBLEUScore):
         targets_lengths: torch.Tensor,
         predictions_mask: Optional[torch.Tensor] = None,
         input_ids: Optional[torch.Tensor] = None,
-        tokenizers: Optional[Sequence[str]] = None,
+        cuts: Optional[CutSet] = None,
+        **kwargs,   # To allow easy swapping of metrics without worrying about var alignment.
     ):
         """
         Updates metric state.
@@ -134,16 +156,18 @@ class BLEU(SacreBLEUScore):
                 ``[Time, Batch]`` (if ``batch_dim_index == 1``). Required for MultiTaskDecoding.
             input_ids: an int torch.Tensor of shape ``[Batch, Time]`` (if ``batch_dim_index == 0``) or
                 ``[Time, Batch]`` (if ``batch_dim_index == 1``). Required for MultiTaskDecoding.
-            tokenizers: an optional sequence of strings of ``length == batch size``. Each element is passed as
+            CutSet: an optional sequence of strings of ``length == batch size``. Each element is passed as
                 the SacreBLEU tokenizer type for corresponding element in batch. If a sequence element is ``None``,
                 the initial tokenizer type from ``BLEU.__init__`` is used. If ``tokenizers == None`` then all elements
                 in batch are tokenized with initial tokenizer type.
         """
-        if tokenizers is not None:
+        bleu_tokenizers = None
+        if self.multi_tokenize and tokenizers is not None:
             assert (
                 len(tokenizers) == targets_lengths.shape[0]
-            ), f"BLEU metrics configured for multiple tokenizers, but got only '{len(tokenizers)}' tokenizer keywords for '{targets_lengths.shape[0]}' samples"
-
+            ), f"BLEU metrics configured for multiple tokenizers, but got only '{len(tokenizers)}' samples for '{targets_lengths.shape[0]}' predictions."
+            bleu_tokenizers = _get_bleu_tokenizers_from_samples(cuts)
+            
         with torch.no_grad():
             # get predictions
             hypotheses = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets)
@@ -157,25 +181,28 @@ class BLEU(SacreBLEUScore):
                 targets_cpu_tensor = _move_dimension_to_the_front(targets_cpu_tensor, self.batch_dim_index)
 
             # iterate over batch
-            for ind in range(targets_cpu_tensor.shape[0]):
-                tgt_len = tgt_lenths_cpu_tensor[ind].item()
-                target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
+            for idx in range(targets_cpu_tensor.shape[0]):
+                tgt_len = tgt_lenths_cpu_tensor[idx].item()
+                target = targets_cpu_tensor[idx][:tgt_len].numpy().tolist()
                 reference = self.decoding.decode_tokens_to_str(target)
 
+                # TODO: the backend implementation of this has a lot of cpu to gpu operations. Should reimplement
+                # for speedup.
                 self.preds_len, self.target_len = _bleu_score_update(
-                    [hypotheses[ind].text],
+                    [hypotheses[idx].text],
                     [[reference]],  # Nested list as BLEU permits multiple references per prediction.
                     self.numerator,
                     self.denominator,
                     self.preds_len,
                     self.target_len,
                     self.n_gram,
-                    self._get_tokenizer(tokenizers[ind] if tokenizers else None),  # `None` arg uses default tokenizer.
+                    self._get_tokenizer(bleu_tokenizers[idx] if bleu_tokenizers is not None else None),  # `None` arg uses default tokenizer.
                 )
-                if self.log_prediction and ind == 0:
+                if self.log_prediction and idx == 0:
                     logging.info("\n")
-                    logging.info(f"reference:{reference}")
-                    logging.info(f"predicted:{hypotheses[0]}")
+                    logging.info(f"BLEU reference:{reference}")
+                    logging.info(f"BLEU predicted:{hypotheses[idx]}")
+
 
     def compute(self, return_all_metrics=True, prefix="", suffix=""):
         """
