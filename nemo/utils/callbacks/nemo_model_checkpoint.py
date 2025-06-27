@@ -257,6 +257,9 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         if backup_path is not None and is_global_rank_zero():
             logging.info(f'Removing old .nemo backup {backup_path}')
             get_filesystem(backup_path).rm(backup_path)
+        if self.monitor in trainer.callback_metrics:
+            val = 0 if self.mode == "max" else float("inf")
+            trainer.callback_metrics[self.monitor] = torch.tensor(val).to(trainer.callback_metrics[self.monitor].device)
         return output
 
     def on_train_end(self, trainer, pl_module):
