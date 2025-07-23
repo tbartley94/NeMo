@@ -129,6 +129,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         _config_check(cfg)
 
         self.prompt_format = cfg.prompt_format
+        self.toggle_source = cfg.prompt_format == "canary_riva_rand"
         self.sample_rate = cfg.sample_rate
         self._setup_tokenizer(cfg.tokenizer)
         prompt_cls = PromptFormatter.resolve(self.prompt_format)
@@ -718,6 +719,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
     # PTL-specific methods
     def training_step(self, batch: PromptedAudioToTextMiniBatch, batch_nb):
+        if self.prompt_format == "canary_riva_rand":
+            self.prompt.TOGGLE_SOURCE = True
         if batch is None:
             return torch.tensor([0.0])
 
@@ -777,6 +780,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         return {"loss": transf_loss, "log": metric_dict}
 
     def validation_pass(self, batch: PromptedAudioToTextMiniBatch, batch_idx, dataloader_idx=0, eval_mode="val"):
+        if self.prompt_format == "canary_riva_rand":
+            self.prompt.TOGGLE_SOURCE = False
         input_ids, labels = batch.get_decoder_inputs_outputs()
         input_ids_lens = batch.prompted_transcript_lens - 1
 

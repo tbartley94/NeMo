@@ -12,3 +12,4 @@ from nemo.collections.common.prompts.phi2 import (
 from nemo.collections.common.prompts.plain import PlainPromptFormatter
 from nemo.collections.common.prompts.t5nmt import T5NMTPromptFormatter
 from nemo.collections.common.prompts.canary_riva import CanaryRivaPromptFormatter
+from nemo.collections.common.prompts.canary_riva_rand import CanaryRivaRandPromptFormatter
