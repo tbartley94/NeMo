@@ -24,8 +24,6 @@ from nemo.collections.common.prompts.formatter import Modality, PromptFormatter,
 from nemo.collections.common.tokenizers.canary_tokenizer import (
     CANARY_BOS,
     CANARY_EOS,
-    CANARY_NOPNC,
-    CANARY_PNC,
     CANARY_SPECIAL_TOKENIZER,
     CanaryTokenizer,
 )
