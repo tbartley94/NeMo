@@ -133,7 +133,7 @@ def canary_riva_rand(cut: Cut, prompt: CanaryRivaRandPromptFormatter) -> dict[st
         dict(
             role="user",
             slots={
-                "source_lang":  cut.custom["source_lang"] if prompt.TOGGLE_SOURCE and rand < 0.5 else "nospeech",
+                "source_lang":  cut.custom["source_lang"] if (prompt.TOGGLE_SOURCE and rand < 0.5) or (not prompt.TOGGLE_SOURCE) else "nospeech",
                 "target_lang": "asr" if cut.custom["source_lang"] == cut.custom["target_lang"] else cut.custom["target_lang"],
                 prompt.PROMPT_LANGUAGE_SLOT: CANARY_SPECIAL_TOKENIZER,
             },
@@ -147,7 +147,7 @@ def canary_riva_rand(cut: Cut, prompt: CanaryRivaRandPromptFormatter) -> dict[st
             slots={
                 "text": text,
                 "source_lang": cut.custom["source_lang"],
-                "text_language":  ifnone(cut.supervisions[0].language, cut.custom.get("target_lang")),
+                "text_language":  ifnone(cut.supervisions[0].language, cut.custom.get("lang")),
                 prompt.PROMPT_LANGUAGE_SLOT: CANARY_SPECIAL_TOKENIZER,
             },
         ),
