@@ -49,42 +49,6 @@ from nemo.utils import logging
 __all__ = ['SortformerEncLabelModel']
 
 
-def concat_and_pad(embs: List[torch.Tensor], lengths: List[torch.Tensor]):
-    """
-    Concatenates lengths[i] first embeddings of embs[i], and pads the rest elements with zeros.
-
-    Args:
-        embs: List of embeddings Tensors of (batch_size, n_frames, emb_dim) shape
-        lengths: List of lengths Tensors of (batch_size,) shape
-
-    Returns:
-        output: concatenated embeddings Tensor of (batch_size, n_frames, emb_dim) shape
-        total_lengths: output lengths Tensor of (batch_size,) shape
-    """
-
-    if len(embs) != len(lengths):
-        raise ValueError(
-            f"Length lists must have the same length, but got len(embs) - {len(embs)} "
-            f"and len(lengths) - {len(lengths)}."
-        )
-    device, dtype = embs[0].device, embs[0].dtype
-    batch_size, emb_dim = embs[0].shape[0], embs[0].shape[2]
-
-    total_lengths = torch.sum(torch.stack(lengths), dim=0)
-    sig_length = total_lengths.max().item()
-
-    output = torch.zeros(batch_size, sig_length, emb_dim, device=device, dtype=dtype)
-    start_indices = torch.zeros(batch_size, dtype=torch.int64, device=device)
-
-    for emb, length in zip(embs, lengths):
-        end_indices = start_indices + length
-        for batch_idx in range(batch_size):
-            output[batch_idx, start_indices[batch_idx] : end_indices[batch_idx]] = emb[batch_idx, : length[batch_idx]]
-        start_indices = end_indices
-
-    return output, total_lengths
-
-
 class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixin):
     """
     Encoder class for Sortformer diarization model.
@@ -154,13 +118,31 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
 
         self.async_streaming = self._cfg.get("async_streaming", False)
         self.streaming_mode = self._cfg.get("streaming_mode", False)
+        if self.streaming_mode:
+            # Validate streaming parameters once at initialization for streaming models
+            self.sortformer_modules._check_streaming_parameters()
         self.save_hyperparameters("cfg")
         self._init_eval_metrics()
         speaker_inds = list(range(self._cfg.max_num_of_spks))
         self.speaker_permutations = torch.tensor(list(itertools.permutations(speaker_inds)))  # Get all permutations
 
         self.max_batch_dur = self._cfg.get("max_batch_dur", 20000)
-        self.concat_and_pad_script = torch.jit.script(concat_and_pad)
+        self.concat_and_pad_script = torch.jit.script(self.sortformer_modules.concat_and_pad)
+        self.rttms_mask_mats: List[torch.Tensor] = None  # Used when GT diarization needs to be tested.
+
+    def add_rttms_mask_mats(self, rttms_mask_mats, device: torch.device):
+        """
+        Check if the rttms_mask_mats is empty then add it to the list
+
+        Args:
+            rttms_mask_mats (List[torch.Tensor]): List of PyTorch tensors containing the rttms mask matrices.
+        """
+        if self.rttms_mask_mats is None:
+            self.rttms_mask_mats = rttms_mask_mats.to(device)
+        else:
+            raise ValueError(
+                f"{self.rttms_mask_mats.shape}: rttms_mask_mats already exist but new one is being added."
+            )
 
     def _init_loss_weights(self):
         pil_weight = self._cfg.get("pil_weight", 0.0)
@@ -337,7 +319,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         """
         encoder_mask = self.sortformer_modules.length_to_mask(emb_seq_length, emb_seq.shape[1])
         trans_emb_seq = self.transformer_encoder(encoder_states=emb_seq, encoder_mask=encoder_mask)
-        preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
+        _preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
+        preds = _preds * encoder_mask.unsqueeze(-1)
         return preds
 
     def _diarize_forward(self, batch: Any):
@@ -737,6 +720,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         processed_signal_length,
         streaming_state,
         total_preds,
+        drop_extra_pre_encoded=0,
         left_offset=0,
         right_offset=0,
     ):
@@ -777,11 +761,17 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         chunk_pre_encode_embs, chunk_pre_encode_lengths = self.encoder.pre_encode(
             x=processed_signal, lengths=processed_signal_length
         )
+        # To match the output of the ASR model, we need to drop the extra pre-encoded embeddings
+        if drop_extra_pre_encoded > 0:
+            chunk_pre_encode_embs = chunk_pre_encode_embs[:, drop_extra_pre_encoded:, :]
+            chunk_pre_encode_lengths = chunk_pre_encode_lengths - drop_extra_pre_encoded
 
         if self.async_streaming:
-            spkcache_fifo_chunk_pre_encode_embs, spkcache_fifo_chunk_pre_encode_lengths = concat_and_pad(
-                [streaming_state.spkcache, streaming_state.fifo, chunk_pre_encode_embs],
-                [streaming_state.spkcache_lengths, streaming_state.fifo_lengths, chunk_pre_encode_lengths],
+            spkcache_fifo_chunk_pre_encode_embs, spkcache_fifo_chunk_pre_encode_lengths = (
+                self.sortformer_modules.concat_and_pad(
+                    [streaming_state.spkcache, streaming_state.fifo, chunk_pre_encode_embs],
+                    [streaming_state.spkcache_lengths, streaming_state.fifo_lengths, chunk_pre_encode_lengths],
+                )
             )
         else:
             spkcache_fifo_chunk_pre_encode_embs = self.sortformer_modules.concat_embs(
@@ -790,7 +780,6 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             spkcache_fifo_chunk_pre_encode_lengths = (
                 streaming_state.spkcache.shape[1] + streaming_state.fifo.shape[1] + chunk_pre_encode_lengths
             )
-
         spkcache_fifo_chunk_fc_encoder_embs, spkcache_fifo_chunk_fc_encoder_lengths = self.frontend_encoder(
             processed_signal=spkcache_fifo_chunk_pre_encode_embs,
             processed_signal_length=spkcache_fifo_chunk_pre_encode_lengths,
@@ -843,6 +832,13 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         Returns:
             (dict): A dictionary containing the following training metrics.
         """
+        if preds.shape[1] < targets.shape[1]:
+            logging.info(
+                f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
+                "Truncating targets and clamping target_lens."
+            )
+            targets = targets[:, : preds.shape[1], :]
+            target_lens = target_lens.clamp(max=preds.shape[1])
         targets_ats = get_ats_targets(targets.clone(), preds, speaker_permutations=self.speaker_permutations)
         targets_pil = get_pil_targets(targets.clone(), preds, speaker_permutations=self.speaker_permutations)
         ats_loss = self.loss(probs=preds, labels=targets_ats, target_lens=target_lens)
@@ -908,6 +904,13 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         Returns:
             val_metrics (dict): A dictionary containing the following validation metrics
         """
+        if preds.shape[1] < targets.shape[1]:
+            logging.info(
+                f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
+                "Truncating targets and clamping target_lens."
+            )
+            targets = targets[:, : preds.shape[1], :]
+            target_lens = target_lens.clamp(max=preds.shape[1])
         targets_ats = get_ats_targets(targets.clone(), preds, speaker_permutations=self.speaker_permutations)
         targets_pil = get_pil_targets(targets.clone(), preds, speaker_permutations=self.speaker_permutations)
 
@@ -968,6 +971,29 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             self.validation_step_outputs.append(val_metrics)
         return val_metrics
 
+    def test_step(self, batch: list, batch_idx: int, dataloader_idx: int = 0):
+        """
+        Performs a single validation step.
+
+        This method processes a batch of data during the validation phase. It forward passes
+        the audio signal through the model, computes various validation metrics, and stores
+        these metrics for later aggregation.
+
+        Args:
+            batch (list): A list containing the following elements:
+                - audio_signal (torch.Tensor): The input audio signal.
+                - audio_signal_length (torch.Tensor): The length of each audio signal in the batch.
+                - targets (torch.Tensor): The target labels for the batch.
+                - target_lens (torch.Tensor): The length of each target sequence in the batch.
+            batch_idx (int): The index of the current batch.
+            dataloader_idx (int, optional): The index of the dataloader in case of multiple
+                                            validation dataloaders. Defaults to 0.
+
+        Returns:
+            dict: A dictionary containing various validation metrics for this batch.
+        """
+        return self.validation_step(batch, batch_idx, dataloader_idx)
+
     def multi_validation_epoch_end(self, outputs: list, dataloader_idx: int = 0):
         if not outputs:
             logging.warning(f"`outputs` is None; empty outputs for dataloader={dataloader_idx}")
@@ -1009,6 +1035,13 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             target_lens (torch.Tensor): Lengths of target sequences.
                 Shape: (batch_size,)
         """
+        if preds.shape[1] < targets.shape[1]:
+            logging.info(
+                f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
+                "Truncating targets and clamping target_lens."
+            )
+            targets = targets[:, : preds.shape[1], :]
+            target_lens = target_lens.clamp(max=preds.shape[1])
         targets_ats = get_ats_targets(targets.clone(), preds, speaker_permutations=self.speaker_permutations)
         targets_pil = get_pil_targets(targets.clone(), preds, speaker_permutations=self.speaker_permutations)
         self._accuracy_test(preds, targets_pil, target_lens)
