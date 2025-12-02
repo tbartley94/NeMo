@@ -19,6 +19,7 @@ from nemo.collections import llm
 from nemo.collections.llm.modelopt import ExportConfig, QuantizationConfig
 from nemo.collections.llm.modelopt.quantization.quant_cfg_choices import get_quant_cfg_choices
 from nemo.collections.llm.modelopt.quantization.quantizer import KV_QUANT_CFG_CHOICES
+from nemo.utils import logging
 
 
 def get_args():
@@ -33,6 +34,7 @@ def get_args():
     )
     parser.add_argument("--decoder_type", type=str, help="Decoder type for TensorRT-Model-Optimizer")
     parser.add_argument("-ctp", "--calibration_tp", "--calib_tp", type=int, default=1)
+    parser.add_argument("-cep", "--calibration_ep", "--calib_ep", type=int, default=1)
     parser.add_argument("-cpp", "--calibration_pp", "--calib_pp", type=int, default=1)
     parser.add_argument(
         "--num_layers_in_first_pipeline_stage",
@@ -136,6 +138,9 @@ def get_args():
 def main():
     """Example NeMo 2.0 Post Training Quantization workflow"""
     args = get_args()
+    if os.path.exists(args.export_path):
+        logging.info(f"Export path: {args.export_path} already exists. Will skip PTQ")
+        return
 
     quantization_config = QuantizationConfig(
         algorithm=None if args.algorithm == "no_quant" else args.algorithm,
@@ -163,6 +168,7 @@ def main():
         export_config=export_config,
         calibration_tp=args.calibration_tp,
         calibration_pp=args.calibration_pp,
+        calibration_ep=args.calibration_ep,
         num_layers_in_first_pipeline_stage=args.num_layers_in_first_pipeline_stage,
         num_layers_in_last_pipeline_stage=args.num_layers_in_last_pipeline_stage,
         devices=args.devices,

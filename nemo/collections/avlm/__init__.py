@@ -15,10 +15,23 @@
 from nemo.collections.avlm.data import AVLMMockDataModule
 from nemo.collections.avlm.model.avlm import AVLMConfig8B
 from nemo.collections.avlm.model.base import AVLMConfig, AVLMModel
+from nemo.collections.avlm.recipes import *
+
 
 __all__ = [
     "AVLMConfig8B",
     "AVLMMockDataModule",
     "AVLMConfig",
     "AVLMModel",
+    "avlm_8b",
 ]
+
+
+import warnings
+
+warnings.warn(
+    "nemo.collections.avlm is deprecated and will be removed in a future major NeMo FW container release. "
+    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
+    DeprecationWarning,
+    stacklevel=2,
+)
